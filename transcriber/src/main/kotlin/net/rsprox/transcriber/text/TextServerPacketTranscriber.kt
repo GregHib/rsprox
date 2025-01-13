@@ -2675,8 +2675,8 @@ public class TextServerPacketTranscriber(
         root.formattedInt("weight", message.runweight, KG_NUMBER_FORMAT)
     }
 
-    private enum class Stat(
-        val id: Int,
+    public enum class Stat(
+        public val id: Int,
     ) : NamedEnum {
         ATTACK(0),
         DEFENCE(1),
