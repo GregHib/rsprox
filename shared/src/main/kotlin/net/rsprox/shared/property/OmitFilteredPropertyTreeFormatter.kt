@@ -4,7 +4,7 @@ import net.rsprox.shared.property.regular.GroupProperty
 import net.rsprox.shared.property.regular.ListProperty
 
 public class OmitFilteredPropertyTreeFormatter(
-    public val propertyFormatterCollection: PropertyFormatterCollection,
+    public override val propertyFormatterCollection: PropertyFormatterCollection,
 ) : PropertyTreeFormatter {
     override fun format(property: RootProperty): List<String> {
         val lines = ArrayList<String>()

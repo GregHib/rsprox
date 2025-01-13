@@ -35,7 +35,7 @@ public class TextTranscriber private constructor(
         cacheProvider.get(),
         filterSetStore,
         settingSetStore,
-        (formatter as OmitFilteredPropertyTreeFormatter).propertyFormatterCollection, // Unsafe but works for now
+        formatter.propertyFormatterCollection,
     ),
     PlayerInfoTranscriber by TextPlayerInfoTranscriber(
         sessionState,
