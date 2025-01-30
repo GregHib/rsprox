@@ -6,6 +6,10 @@ import net.rsprot.protocol.message.IncomingMessage
 import net.rsprox.cache.Js5MasterIndex
 import net.rsprox.cache.resolver.HistoricCacheResolver
 import net.rsprox.protocol.common.CoordGrid
+import net.rsprox.protocol.game.incoming.model.locs.OpLoc
+import net.rsprox.protocol.game.incoming.model.npcs.OpNpc
+import net.rsprox.protocol.game.incoming.model.objs.OpObj
+import net.rsprox.protocol.game.incoming.model.players.OpPlayer
 import net.rsprox.protocol.game.outgoing.model.IncomingZoneProt
 import net.rsprox.protocol.game.outgoing.model.camera.CamReset
 import net.rsprox.protocol.game.outgoing.model.info.npcinfo.extendedinfo.*
@@ -65,7 +69,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                 .map { it to BinaryBlob.decode(it, filters, settings) }
                 .sortedBy { it.second.header.revision }
         for ((path, blob) in fileTreeWalk) {
-            if (path.nameWithoutExtension == "20250112T201306-0ddf543") {
+            if (path.nameWithoutExtension == "canoes-20250130T133949-0ddf543") {
                 simpleTranscribe(path, blob, decoderLoader, provider)
             }
         }
@@ -122,6 +126,16 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
 
     private fun packetToCode(sessionState: SessionState, packet: IncomingMessage) {
         when (packet) {
+            is OpLoc -> println("operateObject(id = \"${objectId(packet.id)}\", x = ${packet.x}, y = ${packet.z}, option = ${packet.op}) // ${packet.id}")
+            is OpObj -> println("operateItem(id = \"${itemId(packet.id)}\", x = ${packet.x}, y = ${packet.z}, option = ${packet.op}) // ${packet.id}")
+            is OpPlayer -> {
+                val player = sessionState.getPlayer(packet.index)
+                println("operatePlayer(tile = ${coordToTile(player.coord)}, option = ${packet.op})")
+            }
+            is OpNpc -> {
+                val npc = sessionState.getActiveWorld().getNpc(packet.index)
+                println("operateNPC(id = \"${npcId(npc.id)}\", tile = ${coordToTile(npc.coord)}, control = ${packet.controlKey}, option = ${packet.op}) // ${npc.id}")
+            }
             // interfaces
             // inventory
             is UpdateInvFull -> {
@@ -171,9 +185,12 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
             is MidiSongV2 -> println("${indent}player.midi(\"${packet.id}\", fadeInDelay = ${packet.fadeInDelay}, fadeInSpeed = ${packet.fadeInSpeed}, fadeOutDelay = ${packet.fadeOutDelay}, fadeOutSpeed = ${packet.fadeOutSpeed})")
             is SynthSound -> println("${indent}player.playSound(\"${soundId(packet.id)}\", delay = ${packet.delay}, loops = ${packet.loops}) // ${packet.id}")
             is UpdateZonePartialEnclosed -> {
-                println("$indent // zone update (${packet.zoneX}, ${packet.zoneZ}, ${packet.level})")
+                val zoneX = packet.zoneX
+                val zoneY = packet.zoneZ
+                val level = packet.level
+                println("$indent // zone update ($zoneX, $zoneY, ${packet.level})")
                 for (child in packet.packets) {
-                    zonePackets(child)
+                    zonePackets(child, zoneX, zoneY, level)
                 }
             }
             is UpdateStatV2 -> {
@@ -183,7 +200,9 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                 if (packet.currentLevel != packet.invisibleBoostedLevel) {
                     println("${indent}player.levels.set(Skill.skillName, ${packet.currentLevel}) // invis: ${packet.invisibleBoostedLevel}")
                 }
-                println("${indent}player.exp(Skill.${skillName}, ${packet.experience - (oldXp ?: 0)})")
+                if (packet.experience - (oldXp ?: 0) != 0) {
+                    println("${indent}player.exp(Skill.${skillName}, ${packet.experience - (oldXp ?: 0)})")
+                }
             }
             else -> {
 //                println(packet)
@@ -191,16 +210,17 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
         }
     }
 
-    private fun zonePackets(packet: IncomingZoneProt) {
+    private fun zonePackets(packet: IncomingZoneProt, zoneX: Int, zoneY: Int, level: Int) {
         when (packet) {
-            is LocAddChange -> println("objects.spawn(${objectId(packet.id)}, tile = Tile(zoneX + ${packet.xInZone}, zoneY + ${packet.zInZone}) shape = ${packet.shape}, rotation = ${packet.rotation})")
-            is LocAnim -> println("${indent}obj.animate(\"${animationId(packet.id)}\", Tile(zoneX + ${packet.xInZone}, zoneY + ${packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation})")
-            is LocDel -> println("${indent}obj.remove(Tile(zoneX + ${packet.xInZone}, zoneY + ${packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation})")
-            is MapAnim -> println("${indent}Tile(zoneX + ${packet.xInZone}, zoneY + ${packet.zInZone}).animate(\"${animationId(packet.id)}\", height = ${packet.height}, delay = ${packet.delay})")
-            is MapProjAnim -> println("${indent}Tile(zoneX + ${packet.xInZone}, zoneY + ${packet.zInZone}).shoot(${gfxId(packet.id)}, Delta(${packet.deltaX}, ${packet.deltaZ}), angle = ${packet.angle}, progress = ${packet.progress}, startTime = ${packet.startTime}, endTime = ${packet.endTime}, startHeight = ${packet.startHeight}, endHeight = ${packet.endHeight}, sourceIndex = ${packet.sourceIndex}, targetIndex = ${packet.targetIndex})")
-            is ObjAdd -> println("${indent}items.spawn(${itemId(packet.id)}, ${packet.quantity}, Tile(zoneX + ${packet.xInZone}, zoneY + ${packet.zInZone}), timeUntilPublic = ${packet.timeUntilPublic}, timeUntilDespawn = ${packet.timeUntilDespawn}, ownershipType = ${packet.ownershipType}, neverBecomesPublic = ${packet.neverBecomesPublic})")
-            is ObjDel -> println("${indent}items.remove(${itemId(packet.id)}, amount = ${packet.quantity}, tile = Tile(zoneX + ${packet.xInZone}, zoneY + ${packet.zInZone}))")
-            is SoundArea -> println("${indent}areaSound(${soundId(packet.id)}, delay = ${packet.delay}, tile = Tile(zoneX + ${packet.xInZone}, zoneY + ${packet.zInZone}), loops = ${packet.loops}, radius = ${packet.radius}, size = ${packet.size})")
+            is LocAddChangeV1 -> println("${indent}objects.spawn(\"${objectId(packet.id)}\", tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}) shape = ${packet.shape}, rotation = ${packet.rotation}) // ${packet.id}")
+            is LocAddChangeV2 -> println("${indent}objects.spawn(\"${objectId(packet.id)}\", tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}) shape = ${packet.shape}, rotation = ${packet.rotation}) // ${packet.id}")
+            is LocAnim -> println("${indent}obj.animate(\"${animationId(packet.id)}\", Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation})")
+            is LocDel -> println("${indent}obj.remove(Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation})")
+            is MapAnim -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).animate(\"${animationId(packet.id)}\", height = ${packet.height}, delay = ${packet.delay})")
+            is MapProjAnim -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).shoot(${gfxId(packet.id)}, Delta(${packet.deltaX}, ${packet.deltaZ}), angle = ${packet.angle}, progress = ${packet.progress}, startTime = ${packet.startTime}, endTime = ${packet.endTime}, startHeight = ${packet.startHeight}, endHeight = ${packet.endHeight}, sourceIndex = ${packet.sourceIndex}, targetIndex = ${packet.targetIndex})")
+            is ObjAdd -> println("${indent}items.spawn(${itemId(packet.id)}, ${packet.quantity}, Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), timeUntilPublic = ${packet.timeUntilPublic}, timeUntilDespawn = ${packet.timeUntilDespawn}, ownershipType = ${packet.ownershipType}, neverBecomesPublic = ${packet.neverBecomesPublic})")
+            is ObjDel -> println("${indent}items.remove(${itemId(packet.id)}, amount = ${packet.quantity}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}))")
+            is SoundArea -> println("${indent}areaSound(${soundId(packet.id)}, delay = ${packet.delay}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), loops = ${packet.loops}, radius = ${packet.radius}, size = ${packet.size})")
         }
     }
 
@@ -229,7 +249,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
         }
     }
 
-    private fun coordToTile(coord: CoordGrid) = "Tile(${coord.x}, ${coord.z}, ${coord.level})"
+    private fun coordToTile(coord: CoordGrid) = "Tile(${coord.x}, ${coord.z}${if (coord.level != 0) ", ${coord.level}" else ""})"
 
     private fun handleExtendedInfo(sessionState: SessionState, info: ExtendedInfo) {
         when (info) {
@@ -247,7 +267,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
             is AppearanceExtendedInfo -> println("${indent}player.flagAppearance() // $info")
             is ChatExtendedInfo -> println("${indent}player.forceChat = \"${info.text}\" // ${info.colour} ${info.effects} ${info.modIcon}")
             is FaceAngleExtendedInfo -> println(
-                "${indent}player.turn(${
+                "${indent}player.face(${
                     angleToDir(info.angle)
                 })"
             )
@@ -268,12 +288,35 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                 }
             }
             is HitExtendedInfo -> for (hit in info.hits) {
-                println("${indent}player.hit(type = ${hit.type}, value = ${hit.value}, soakType = ${hit.soakType}, soakValue = ${hit.soakValue}, delay = ${hit.delay})")
+                println(buildString {
+                    append(indent)
+                    append("player.hit(type = ${hit.type}, value = ${hit.value}")
+                    if (hit.soakType != -1) {
+                        append(", soakType = ${hit.soakType}")
+                    }
+                    if (hit.soakValue != -1) {
+                        append(", soakValue = ${hit.soakValue}")
+                    }
+                    if (hit.delay != -1) {
+                        append(", delay = ${hit.delay}")
+                    }
+                    append(")")
+                })
             }
             is SayExtendedInfo -> println("${indent}player.forceChat = \"${info.text}\"")
-            is SequenceExtendedInfo -> println("${indent}player.setAnimation(\"${animationId(info.id)}\", delay = ${info.delay}) // ${info.id}")
+            is SequenceExtendedInfo -> println("${indent}player.setAnimation(\"${animationId(info.id)}\"${if (info.delay != 0) ", delay = ${info.delay}" else ""}) // ${info.id}")
             is SpotanimExtendedInfo -> for ((slot, anim) in info.spotanims) {
-                println("${indent}player.setGraphic(\"${animationId(anim.id)}\", height = ${anim.height}, delay = ${anim.delay}) // slot ${slot}")
+                println(buildString {
+                    append(indent)
+                    append("player.setGraphic(id = \"animationId(anim.id)\"")
+                    if (anim.height != 0) {
+                        append(", height = ${anim.height}")
+                    }
+                    if (anim.delay != 0) {
+                        append(", delay = ${anim.delay}")
+                    }
+                    append(") // slot $slot")
+                })
             }
             is TintingExtendedInfo -> {}
         }
@@ -291,9 +334,9 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
 
     private fun angleToDir(angle: Int): String {
         return when (angle) {
-            0 -> "Direction.NORTH"
+            0 -> "Direction.SOUTH"
             512 -> "Direction.EAST"
-            1024 -> "Direction.SOUTH"
+            1024 -> "Direction.NORTH"
             1536 -> "Direction.WEST"
             else -> angle.toString()
 
@@ -309,7 +352,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
             27 -> "ChatType.ItemExamine"
             28 -> "ChatType.ObjectExamine"
             99 -> "ChatType.Console"
-            109 -> "ChatType.Filter"
+            109, 105 -> "ChatType.Filter"
             115 -> "ChatType.Broadcast"
             else -> type.toString()
 
