@@ -69,8 +69,9 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                 .map { it to BinaryBlob.decode(it, filters, settings) }
                 .sortedBy { it.second.header.revision }
         for ((path, blob) in fileTreeWalk) {
-            if (path.nameWithoutExtension == "canoes-20250130T133949-0ddf543") {
+            if (path.nameWithoutExtension == "20250219T193900-0ddf543") {
                 simpleTranscribe(path, blob, decoderLoader, provider)
+                break
             }
         }
     }
@@ -90,7 +91,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
         decoderLoader.load(statefulCacheProvider)
         val latestPlugin = decoderLoader.getDecoder(binary.header.revision)
         val session = DecodingSession(binary, latestPlugin)
-        val sessionState = SessionState(DefaultSettingSetStore(binaryPath))
+        val sessionState = SessionState(binary.header.revision, DefaultSettingSetStore(binaryPath))
         val sessionTracker =
             SessionTracker(
                 sessionState,
@@ -183,12 +184,14 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
             // sound
             is MidiJingle -> println("${indent}player.jingle(\"${jingleId(packet.id)}\") // ${packet.id}")
             is MidiSongV2 -> println("${indent}player.midi(\"${packet.id}\", fadeInDelay = ${packet.fadeInDelay}, fadeInSpeed = ${packet.fadeInSpeed}, fadeOutDelay = ${packet.fadeOutDelay}, fadeOutSpeed = ${packet.fadeOutSpeed})")
-            is SynthSound -> println("${indent}player.playSound(\"${soundId(packet.id)}\", delay = ${packet.delay}, loops = ${packet.loops}) // ${packet.id}")
+            is SynthSound -> println("${indent}player.sound(\"${soundId(packet.id)}\"${if(packet.delay == 0 && packet.loops == 1) "" else ", delay = ${packet.delay}, loops = ${packet.loops}"}) // ${packet.id}")
             is UpdateZonePartialEnclosed -> {
                 val zoneX = packet.zoneX
                 val zoneY = packet.zoneZ
                 val level = packet.level
-                println("$indent // zone update ($zoneX, $zoneY, ${packet.level})")
+                if (packet.packets.isNotEmpty()) {
+                    println("$indent // zone update ($zoneX, $zoneY, ${packet.level})")
+                }
                 for (child in packet.packets) {
                     zonePackets(child, zoneX, zoneY, level)
                 }
@@ -198,7 +201,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                 val skill = Stat.entries.first { it.id == packet.stat }
                 val skillName = skill.prettyName.first().uppercase() + skill.prettyName.drop(1)
                 if (packet.currentLevel != packet.invisibleBoostedLevel) {
-                    println("${indent}player.levels.set(Skill.skillName, ${packet.currentLevel}) // invis: ${packet.invisibleBoostedLevel}")
+                    println("${indent}player.levels.set(Skill.${skillName}, ${packet.currentLevel}) // invis: ${packet.invisibleBoostedLevel}")
                 }
                 if (packet.experience - (oldXp ?: 0) != 0) {
                     println("${indent}player.exp(Skill.${skillName}, ${packet.experience - (oldXp ?: 0)})")
@@ -212,15 +215,15 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
 
     private fun zonePackets(packet: IncomingZoneProt, zoneX: Int, zoneY: Int, level: Int) {
         when (packet) {
-            is LocAddChangeV1 -> println("${indent}objects.spawn(\"${objectId(packet.id)}\", tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}) shape = ${packet.shape}, rotation = ${packet.rotation}) // ${packet.id}")
-            is LocAddChangeV2 -> println("${indent}objects.spawn(\"${objectId(packet.id)}\", tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}) shape = ${packet.shape}, rotation = ${packet.rotation}) // ${packet.id}")
-            is LocAnim -> println("${indent}obj.animate(\"${animationId(packet.id)}\", Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation})")
+            is LocAddChangeV1 -> println("${indent}objects.add(\"${objectId(packet.id)}\", tile = Tile(${packet.xInZone}, ${packet.zInZone}) shape = ${packet.shape}, rotation = ${packet.rotation}) // ${packet.id}")
+            is LocAddChangeV2 -> println("${indent}objects.add(\"${objectId(packet.id)}\", tile = Tile(${packet.xInZone}, ${packet.zInZone}) shape = ${packet.shape}, rotation = ${packet.rotation}) // ${packet.id}")
+            is LocAnim -> println("${indent}obj.anim(\"${animationId(packet.id)}\") // Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation}, id = ${packet.id}")
             is LocDel -> println("${indent}obj.remove(Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation})")
             is MapAnim -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).animate(\"${animationId(packet.id)}\", height = ${packet.height}, delay = ${packet.delay})")
             is MapProjAnim -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).shoot(${gfxId(packet.id)}, Delta(${packet.deltaX}, ${packet.deltaZ}), angle = ${packet.angle}, progress = ${packet.progress}, startTime = ${packet.startTime}, endTime = ${packet.endTime}, startHeight = ${packet.startHeight}, endHeight = ${packet.endHeight}, sourceIndex = ${packet.sourceIndex}, targetIndex = ${packet.targetIndex})")
-            is ObjAdd -> println("${indent}items.spawn(${itemId(packet.id)}, ${packet.quantity}, Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), timeUntilPublic = ${packet.timeUntilPublic}, timeUntilDespawn = ${packet.timeUntilDespawn}, ownershipType = ${packet.ownershipType}, neverBecomesPublic = ${packet.neverBecomesPublic})")
-            is ObjDel -> println("${indent}items.remove(${itemId(packet.id)}, amount = ${packet.quantity}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}))")
-            is SoundArea -> println("${indent}areaSound(${soundId(packet.id)}, delay = ${packet.delay}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), loops = ${packet.loops}, radius = ${packet.radius}, size = ${packet.size})")
+            is ObjAdd -> println("${indent}items.spawn(\"${itemId(packet.id)}\", ${packet.quantity}, Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), timeUntilPublic = ${packet.timeUntilPublic}, timeUntilDespawn = ${packet.timeUntilDespawn}, ownershipType = ${packet.ownershipType}, neverBecomesPublic = ${packet.neverBecomesPublic})")
+            is ObjDel -> println("${indent}items.remove(\"${itemId(packet.id)}\", amount = ${packet.quantity}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}))")
+            is SoundArea -> println("${indent}areaSound(\"${soundId(packet.id)}\", delay = ${packet.delay}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), loops = ${packet.loops}, radius = ${packet.radius}, size = ${packet.size})")
         }
     }
 
@@ -265,7 +268,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
             is TransformationExtendedInfo -> println("${indent}npc.transform(\"${npcId(info.id)}\")")
             // Player
             is AppearanceExtendedInfo -> println("${indent}player.flagAppearance() // $info")
-            is ChatExtendedInfo -> println("${indent}player.forceChat = \"${info.text}\" // ${info.colour} ${info.effects} ${info.modIcon}")
+            is ChatExtendedInfo -> println("${indent}player.say(\"${info.text}\") // ${info.colour} ${info.effects} ${info.modIcon}")
             is FaceAngleExtendedInfo -> println(
                 "${indent}player.face(${
                     angleToDir(info.angle)
@@ -303,12 +306,16 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                     append(")")
                 })
             }
-            is SayExtendedInfo -> println("${indent}player.forceChat = \"${info.text}\"")
-            is SequenceExtendedInfo -> println("${indent}player.setAnimation(\"${animationId(info.id)}\"${if (info.delay != 0) ", delay = ${info.delay}" else ""}) // ${info.id}")
+            is SayExtendedInfo -> println("${indent}player.say(\"${info.text}\")")
+            is SequenceExtendedInfo -> if (info.id == 65535) {
+                println("${indent}player.clearAnim()")
+            } else {
+                println("${indent}player.anim(\"${animationId(info.id)}\"${if (info.delay != 0) ", delay = ${info.delay}" else ""}) // ${info.id}")
+            }
             is SpotanimExtendedInfo -> for ((slot, anim) in info.spotanims) {
                 println(buildString {
                     append(indent)
-                    append("player.setGraphic(id = \"animationId(anim.id)\"")
+                    append("player.gfx(id = \"${animationId(anim.id)}\"")
                     if (anim.height != 0) {
                         append(", height = ${anim.height}")
                     }
@@ -359,15 +366,15 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
         }
     }
 
-    private val animations = loadOsrs("animation-2024-02-27")
-    private val items = loadOsrs("item")
-    private val objects = loadOsrs("object")
-    private val graphics = loadOsrs("graphics-2024-02-27")
-    private val npcs = loadOsrs("npc")
+    private val animations = loadReal("seqtypes")
+    private val items = loadReal("objtypes")
+    private val objects = loadReal("loctypes")
+    private val graphics = loadReal("spottypes")
+    private val npcs = loadReal("npctypes")
     private val scripts = loadOsrs("clientscript")
     private val sounds = loadOsrs("sound")
-    private val varps = loadOsrs("varp")
-    private val inventories = loadOsrs("inventory")
+    private val varps = loadReal("varptypes")
+    private val inventories = loadReal("invtypes")
     private val jingles = loadOsrs("jingle")
 
     private fun scriptId(id: Int): String = scripts.getOrDefault(id, id.toString())
@@ -416,6 +423,19 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                     continue
                 }
                 val (string, int) = line.split(":")
+                map[int.toInt()] = string
+            }
+            return map
+        }
+
+        private fun loadReal(name: String): Map<Int, String> {
+            val file = File("${System.getProperty("user.home")}/Documents/Void/data/leak-2025-04/$name.txt")
+            val map = mutableMapOf<Int, String>()
+            for (line in file.readLines()) {
+                if (line.isBlank()) {
+                    continue
+                }
+                val (int, string) = line.split("\t")
                 map[int.toInt()] = string
             }
             return map
