@@ -27,6 +27,8 @@ import net.rsprox.protocol.game.outgoing.model.interfaces.IfMoveSub
 import net.rsprox.protocol.game.outgoing.model.interfaces.IfOpenSub
 import net.rsprox.protocol.game.outgoing.model.interfaces.IfOpenTop
 import net.rsprox.protocol.game.outgoing.model.interfaces.IfResyncV1
+import net.rsprox.protocol.game.outgoing.model.inv.UpdateInvFull
+import net.rsprox.protocol.game.outgoing.model.inv.UpdateInvPartial
 import net.rsprox.protocol.game.outgoing.model.map.*
 import net.rsprox.protocol.game.outgoing.model.misc.client.ServerTickEnd
 import net.rsprox.protocol.game.outgoing.model.misc.player.UpdateStatV1
@@ -366,6 +368,18 @@ public class SessionTracker(
                     is SetActiveWorldV1.RootWorldType -> {
                         sessionState.setActiveWorld(-1, type.activeLevel)
                     }
+                }
+            }
+            is UpdateInvFull -> {
+                val inventory = sessionState.inventories.getOrPut(message.inventoryId) { Inventory() }
+                for ((i, update) in message.objs.withIndex()) {
+                    inventory.items[i] = Inventory.Item(update.id, update.count)
+                }
+            }
+            is UpdateInvPartial -> {
+                val inventory = sessionState.inventories.getOrPut(message.inventoryId) { Inventory() }
+                for (update in message.objs) {
+                    inventory.items[update.slot] = Inventory.Item(update.id, update.count)
                 }
             }
         }
