@@ -1,15 +1,16 @@
 package net.rsprox.proxy.cli
 
-import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.parameters.options.option
 import net.rsprot.protocol.message.IncomingMessage
-import net.rsprox.cache.Js5MasterIndex
-import net.rsprox.cache.resolver.HistoricCacheResolver
 import net.rsprox.protocol.common.CoordGrid
 import net.rsprox.protocol.game.incoming.model.locs.OpLoc
+import net.rsprox.protocol.game.incoming.model.locs.OpLocT
 import net.rsprox.protocol.game.incoming.model.npcs.OpNpc
+import net.rsprox.protocol.game.incoming.model.npcs.OpNpcT
 import net.rsprox.protocol.game.incoming.model.objs.OpObj
+import net.rsprox.protocol.game.incoming.model.objs.OpObjT
 import net.rsprox.protocol.game.incoming.model.players.OpPlayer
+import net.rsprox.protocol.game.incoming.model.players.OpPlayerT
 import net.rsprox.protocol.game.incoming.model.resumed.ResumePauseButton
 import net.rsprox.protocol.game.outgoing.model.IncomingZoneProt
 import net.rsprox.protocol.game.outgoing.model.camera.CamReset
@@ -33,68 +34,42 @@ import net.rsprox.protocol.game.outgoing.model.varp.VarpLarge
 import net.rsprox.protocol.game.outgoing.model.varp.VarpSmall
 import net.rsprox.protocol.game.outgoing.model.zone.header.UpdateZonePartialEnclosed
 import net.rsprox.protocol.game.outgoing.model.zone.payload.*
-import net.rsprox.proxy.binary.BinaryBlob
-import net.rsprox.proxy.cache.StatefulCacheProvider
-import net.rsprox.proxy.config.BINARY_PATH
-import net.rsprox.proxy.config.FILTERS_DIRECTORY
-import net.rsprox.proxy.config.SETTINGS_DIRECTORY
-import net.rsprox.proxy.filters.DefaultPropertyFilterSetStore
-import net.rsprox.proxy.huffman.HuffmanProvider
-import net.rsprox.proxy.plugin.DecoderLoader
-import net.rsprox.proxy.plugin.DecodingSession
-import net.rsprox.proxy.settings.DefaultSettingSetStore
-import net.rsprox.proxy.util.NopSessionMonitor
-import net.rsprox.shared.StreamDirection
+import net.rsprox.proxy.cli.ConfigLoader.loadOsrs
+import net.rsprox.proxy.cli.ConfigLoader.loadReal
+import net.rsprox.proxy.cli.ConfigLoader.loadRealMap
 import net.rsprox.transcriber.state.Inventory
 import net.rsprox.transcriber.state.Player
 import net.rsprox.transcriber.state.SessionState
-import net.rsprox.transcriber.state.SessionTracker
 import net.rsprox.transcriber.text.TextServerPacketTranscriber.Stat
 import java.io.File
-import java.nio.file.Path
-import kotlin.io.path.nameWithoutExtension
 
 @Suppress("DuplicatedCode")
-public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
+public class BinaryToCodeCommand : Transcriber(name = "tocode") {
     private val name by option("-name")
     private var indent = ""
 
+    override fun filter(path: File): Boolean {
+        return path.nameWithoutExtension == name
+    }
+
     /*
-         * | Id | Client Angle |  Direction |
- * |:--:|:------------:|:----------:|
- * |  0 |      768     | North-West |
- * |  1 |     1024     |    North   |
- * |  2 |     1280     | North-East |
- * |  3 |      512     |    West    |
- * |  4 |     1536     |    East    |
- * |  5 |      256     | South-West |
- * |  6 |       0      |    South   |
- * |  7 |     1792     | South-East |
-     */
+             * | Id | Client Angle |  Direction |
+     * |:--:|:------------:|:----------:|
+     * |  0 |      768     | North-West |
+     * |  1 |     1024     |    North   |
+     * |  2 |     1280     | North-East |
+     * |  3 |      512     |    West    |
+     * |  4 |     1536     |    East    |
+     * |  5 |      256     | South-West |
+     * |  6 |       0      |    South   |
+     * |  7 |     1792     | South-East |
+         */
     override fun run() {
-        val decoderLoader = DecoderLoader()
-        HuffmanProvider.load()
-        val provider = StatefulCacheProvider(HistoricCacheResolver())
-        val filters = DefaultPropertyFilterSetStore.load(FILTERS_DIRECTORY)
-        val settings = DefaultSettingSetStore.load(SETTINGS_DIRECTORY)
-        val fileTreeWalk =
-            BINARY_PATH
-                .toFile()
-                .walkTopDown()
-                .filter { it.extension == "bin" }
-                .map { it.toPath() }
-                .map { it to BinaryBlob.decode(it, filters, settings) }
-                .sortedBy { it.second.header.revision }
-        for ((path, blob) in fileTreeWalk) {
-            if (path.nameWithoutExtension == "prince-ali-rescue-full-20250514T133541-0ddf543") {
-                simpleTranscribe(path, blob, decoderLoader, provider)
-                break
-            }
-        }
+        super.run()
         println("==== Dialogues ====")
         for (dialogue in dialogues) {
             var next: Dialogue? = dialogue
-            while (next != null) {
+            while (next != null && next != EndDialogue) {
                 println(next.print(1))
                 next = next.next
             }
@@ -102,57 +77,6 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
         }
     }
 
-    private fun simpleTranscribe(
-        binaryPath: Path,
-        binary: BinaryBlob,
-        decoderLoader: DecoderLoader,
-        statefulCacheProvider: StatefulCacheProvider,
-    ) {
-        statefulCacheProvider.update(
-            Js5MasterIndex.trimmed(
-                binary.header.revision,
-                binary.header.js5MasterIndex,
-            ),
-        )
-        decoderLoader.load(statefulCacheProvider)
-        val latestPlugin = decoderLoader.getDecoder(binary.header.revision)
-        val session = DecodingSession(binary, latestPlugin)
-        val sessionState = SessionState(binary.header.revision, DefaultSettingSetStore(binaryPath))
-        val sessionTracker =
-            SessionTracker(
-                sessionState,
-                statefulCacheProvider.get(),
-                NopSessionMonitor,
-            )
-        var tick = 0
-        for ((direction, prot, packet) in session.sequence()) {
-            if (tick != 0) {
-                packetToCode(sessionState, packet)
-            }
-            when (direction) {
-                StreamDirection.CLIENT_TO_SERVER -> {
-                    sessionTracker.onClientPacket(packet, prot)
-                    sessionTracker.beforeTranscribe(packet)
-                    sessionTracker.afterTranscribe(packet)
-                }
-                StreamDirection.SERVER_TO_CLIENT -> {
-                    sessionTracker.onServerPacket(packet, prot)
-                    sessionTracker.beforeTranscribe(packet)
-                    sessionTracker.afterTranscribe(packet)
-                }
-            }
-
-            if (packet is ServerTickEnd) {
-                tick++
-                println("Tick [$tick]")
-                indent = "    "
-//                if (tick == 100) {
-//                    break
-//                }
-            }
-        }
-        echo("Binary file decoded ${binaryPath.nameWithoutExtension}")
-    }
 
     private sealed class Dialogue {
         abstract var text: String
@@ -353,17 +277,42 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
         1575, // inferno_temp_noprotect_transmit
     )
 
-    private fun packetToCode(sessionState: SessionState, packet: IncomingMessage) {
+    override fun processPacket(tick: Int, sessionState: SessionState, packet: IncomingMessage) {
         when (packet) {
-            is OpLoc -> println("objectOperate(\"${packet.op}\", \"${objectId(packet.id)}\") {} // x = ${packet.x}, y = ${packet.z}, option = ${packet.op} id = ${packet.id}")
-            is OpObj -> println("floorItemOperate(id = \"${itemId(packet.id)}\", x = ${packet.x}, y = ${packet.z}, option = ${packet.op}) // ${packet.id}")
+            is OpNpcT -> {
+                val npc = sessionState.getActiveWorld().getNpc(packet.index)
+                println("itemOnNpcOperate(\"${itemId(packet.selectedObj)}\", \"${npcId(npc.id)}\") {}")
+                resetDialogue()
+            }
+            is OpObjT -> {
+                println("itemOnFloorItemOperate(\"${itemId(packet.selectedObj)}\", \"${objectId(packet.id)}\") {} // x = ${packet.x}, y = ${packet.z} id = ${packet.id}")
+                resetDialogue()
+            }
+            is OpLocT -> {
+                println("itemOnObjectOperate(\"${itemId(packet.selectedObj)}\", \"${objectId(packet.id)}\") {} // x = ${packet.x}, y = ${packet.z} id = ${packet.id}")
+                resetDialogue()
+            }
+            is OpPlayerT -> {
+                println("itemOnPlayerOperate(\"${itemId(packet.selectedObj)}\") {}")
+                resetDialogue()
+            }
+            is OpLoc -> {
+                println("objectOperate(\"${packet.op}\", \"${objectId(packet.id)}\") {} // x = ${packet.x}, y = ${packet.z}, option = ${packet.op} id = ${packet.id}")
+                resetDialogue()
+            }
+            is OpObj -> {
+                println("floorItemOperate(id = \"${itemId(packet.id)}\", x = ${packet.x}, y = ${packet.z}, option = ${packet.op}) // ${packet.id}")
+                resetDialogue()
+            }
             is OpPlayer -> {
                 val player = sessionState.getPlayer(packet.index)
                 println("playerOperate(tile = ${coordToTile(player.coord)}, option = ${packet.op})")
+                resetDialogue()
             }
             is OpNpc -> {
                 val npc = sessionState.getActiveWorld().getNpc(packet.index)
                 println("npcOperate(id = \"${npcId(npc.id)}\", tile = ${coordToTile(npc.coord)}, control = ${packet.controlKey}, option = ${packet.op}) // ${npc.id}")
+                resetDialogue()
             }
             // interfaces
             // inventory
@@ -393,7 +342,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                         actions.add("player.$invName.clear(${update.slot})")
                     } else if (update.id == -1 && before != null) {
                         actions.add("player.$invName.remove(\"${itemId(before)}\") // $before")
-                    } else if (before != null && update.count == 1) {
+                    } else if (before != null && before != -1 && update.count == 1) {
                         actions.add("player.$invName.replace(\"${itemId(before)}\", \"${itemId(update.id)}\") // $before, ${update.id}")
                     } else {
                         actions.add("player.$invName.add(\"${itemId(update.id)}\"${if (update.count > 1) ", ${update.count}" else ""}) // ${update.id}")
@@ -557,8 +506,10 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                     // Statements
                     "messagebox:text" -> (dialogue as Statement).text = packet.text
                     "messagebox:continue" -> (dialogue as Statement).clickToContinue = packet.text == "Click here to continue"
-                    else -> if (packet.text != "Click here to continue") {
-                        println("    player.interfaces.sendText(${packet.interfaceId}, ${packet.componentId}, \"${packet.text}\") // $component")
+                    else -> {
+                        if (packet.text != "Click here to continue") {
+                            println("    player.interfaces.sendText(${packet.interfaceId}, ${packet.componentId}, \"${packet.text}\") // $component")
+                        }
                     }
                 }
             }
@@ -578,7 +529,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
 //                        println("==== Dialogue ====")
                         val dialogue = root
                         if (dialogue != null) {
-                            dialogues.add(dialogue)
+//                            dialogues.add(dialogue)
 //                            while (dialogue != null) {
 //                                println(dialogue.print(1))
 //                                dialogue = dialogue.next
@@ -633,6 +584,14 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
         }
     }
 
+    private fun resetDialogue() {
+        previous = null
+        dialogue = null
+        root = null
+        choice = null
+        actions.clear()
+    }
+
     private fun createDialogue(interfaceId: Int): Boolean {
         dialogue = when (interfaceId) {
             231 -> NpcChat() // chat_left
@@ -645,6 +604,7 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
             else -> return false
         }
         if (root == null) {
+            dialogues.add(dialogue!!)
             root = dialogue
         }
         return true
@@ -868,73 +828,9 @@ public class BinaryToCodeCommand : CliktCommand(name = "tocode") {
                 else -> id.toString()
             }
         }
-
-        private fun loadQuickly(name: String): Map<Int, String> {
-            val file = File("${System.getProperty("user.home")}/IdeaProjects/void/data/definitions/$name.yml")
-            val map = mutableMapOf<Int, String>()
-            var name = ""
-            for (line in file.readLines()) {
-                if (line.startsWith("  id:")) {
-                    val (_, id) = line.split(": ")
-                    map[id.trim().toInt()] = name
-                } else if (!line.startsWith("#") && !line.startsWith(" ")) {
-                    val parts = line.split(": ")
-                    if (parts.size == 2) {
-                        val id = if (parts[1].contains("#")) {
-                            parts[1].split("#").first()
-                        } else {
-                            parts[1]
-                        }.trim().toInt()
-                        map[id] = parts[0]
-                    } else {
-                        name = parts[0]
-                    }
-                }
-            }
-            return map
-        }
-
-        private fun loadOsrs(name: String): Map<Int, String> {
-            val file = File("${System.getProperty("user.home")}/Documents/RSPS/kris/mappings/$name.rscm")
-            val map = mutableMapOf<Int, String>()
-            for (line in file.readLines()) {
-                if (line.isBlank()) {
-                    continue
-                }
-                val (string, int) = line.split(":")
-                map[int.toInt()] = string
-            }
-            return map
-        }
-
-        private fun loadReal(name: String): Map<Int, String> {
-            val file = File("${System.getProperty("user.home")}/Documents/Void/data/leak-2025-04/$name.txt")
-            val map = mutableMapOf<Int, String>()
-            for (line in file.readLines()) {
-                if (line.isBlank()) {
-                    continue
-                }
-                val (int, string) = line.split("\t")
-                map[int.toInt()] = string
-            }
-            return map
-        }
-
-        private fun loadRealMap(name: String): Map<String, String> {
-            val file = File("${System.getProperty("user.home")}/Documents/Void/data/leak-2025-04/$name.txt")
-            val map = mutableMapOf<String, String>()
-            for (line in file.readLines()) {
-                if (line.isBlank()) {
-                    continue
-                }
-                val (key, string) = line.split("\t")
-                map[key] = string
-            }
-            return map
-        }
     }
 }
 
-public fun main(args: Array<String>) {
-    BinaryToCodeCommand().main(args)
+public fun main() {
+    BinaryToCodeCommand().main(arrayOf("-name", "prince-ali-rescue-full-20250514T133541-0ddf543"))
 }
