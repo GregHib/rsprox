@@ -36,6 +36,7 @@ public class SessionState(
     private val experience: MutableMap<Int, Int> = HashMap()
     public val mouseTracker: MouseTracker = MouseTracker()
     public val nativeMouseTracker: MouseTracker = MouseTracker()
+    public val inventories: MutableMap<Int, Inventory> = mutableMapOf()
 
     public fun setRoot() {
         this.root +=
