@@ -321,7 +321,6 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 println("${indent}player.inventory(\"${invId(packet.inventoryId)}\").apply {")
                 indent = "        "
                 for ((i, update) in packet.objs.withIndex()) {
-                    println(inventory.items[i])
                     println("${indent}set($i, \"${itemId(update.id)}\", ${update.count}) // ${update.id}")
                 }
                 indent = "    "
@@ -577,6 +576,7 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 }
                 choice = null
                 actions.clear()
+                println("Tick [$tick]")
             }
             else -> {
 //                println(packet)
