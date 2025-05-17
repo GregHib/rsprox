@@ -24,7 +24,7 @@ public class BinaryToJournalsCommand : Transcriber(name = "journals") {
     override fun run() {
         super.run()
         println("==== Journals ====")
-        for ((group, journals) in journals.distinct().sortedBy { it.lines.size }.groupBy { it.title }) {
+        for ((group, journals) in journals.distinct().groupBy { it.title }) {
             val id = group.lowercase()
                 .replace(" ", "_")
                 .removePrefix("<col=7f0000>")
@@ -40,6 +40,7 @@ public class BinaryToJournalsCommand : Transcriber(name = "journals") {
                 println("        )")
             }
             println("    }")
+            println("player.questJournal(\"${group}\", lines)")
             println("}")
         }
     }
