@@ -15,6 +15,7 @@ import net.rsprox.protocol.game.incoming.model.resumed.ResumePauseButton
 import net.rsprox.protocol.game.outgoing.model.IncomingZoneProt
 import net.rsprox.protocol.game.outgoing.model.camera.CamReset
 import net.rsprox.protocol.game.outgoing.model.info.npcinfo.NpcInfo
+import net.rsprox.protocol.game.outgoing.model.info.npcinfo.NpcUpdateType
 import net.rsprox.protocol.game.outgoing.model.info.npcinfo.extendedinfo.*
 import net.rsprox.protocol.game.outgoing.model.info.playerinfo.PlayerInfo
 import net.rsprox.protocol.game.outgoing.model.info.playerinfo.PlayerUpdateType
@@ -32,6 +33,7 @@ import net.rsprox.protocol.game.outgoing.model.sound.MidiSongV2
 import net.rsprox.protocol.game.outgoing.model.sound.SynthSound
 import net.rsprox.protocol.game.outgoing.model.varp.VarpLarge
 import net.rsprox.protocol.game.outgoing.model.varp.VarpSmall
+import net.rsprox.protocol.game.outgoing.model.zone.header.UpdateZoneFullFollows
 import net.rsprox.protocol.game.outgoing.model.zone.header.UpdateZonePartialEnclosed
 import net.rsprox.protocol.game.outgoing.model.zone.payload.*
 import net.rsprox.proxy.cli.ConfigLoader.loadOsrs
@@ -402,11 +404,11 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             }
             is PlayerInfo -> handlePlayerInfo(sessionState, packet)
             is NpcInfo -> {
-//                for ((key, update) in packet.updates) {
-//                    if (update is NpcUpdateType) {
-//                        println(update)
-//                    }
-//                }
+                for ((key, update) in packet.updates) {
+                    if (update is NpcUpdateType) {
+                        println(update)
+                    }
+                }
             }
             // camera
             is CamReset -> println("${indent}player.clearCamera()")
@@ -484,27 +486,27 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             is IfSetAnim -> {
                 val component = componentId(packet.interfaceId, packet.componentId)
                 when (component) {
-                    "chat_left:head" -> (dialogue as NpcChat).animation = packet.anim
-                    "chat_right:head" -> (dialogue as PlayerChat).animation = packet.anim
+                    "chat_left:head" -> (dialogue as? NpcChat)?.animation = packet.anim
+                    "chat_right:head" -> (dialogue as? PlayerChat)?.animation = packet.anim
                     else -> println(packet)
                 }
             }
             is IfSetText -> {
                 when (val component = componentId(packet.interfaceId, packet.componentId)) {
                     // Npc
-                    "chat_left:name" -> (dialogue as NpcChat).name = packet.text
-                    "chat_left:continue" -> (dialogue as NpcChat).clickToContinue = packet.text == "Click here to continue"
-                    "chat_left:text" -> (dialogue as NpcChat).text = packet.text
+                    "chat_left:name" -> (dialogue as? NpcChat)?.name = packet.text
+                    "chat_left:continue" -> (dialogue as? NpcChat)?.clickToContinue = packet.text == "Click here to continue"
+                    "chat_left:text" -> (dialogue as? NpcChat)?.text = packet.text
                     // Player
-                    "chat_right:name" -> (dialogue as PlayerChat).name = packet.text
-                    "chat_right:text" -> (dialogue as PlayerChat).text = packet.text
-                    "chat_right:continue" -> (dialogue as PlayerChat).clickToContinue = packet.text == "Click here to continue"
+                    "chat_right:name" -> (dialogue as? PlayerChat)?.name = packet.text
+                    "chat_right:text" -> (dialogue as? PlayerChat)?.text = packet.text
+                    "chat_right:continue" -> (dialogue as? PlayerChat)?.clickToContinue = packet.text == "Click here to continue"
                     // Items
-                    "objectbox:text" -> (dialogue as ItemBox).text = packet.text
-                    "objectbox_double:text" -> (dialogue as DoubleItemBox).text = packet.text
+                    "objectbox:text" -> (dialogue as? ItemBox)?.text = packet.text
+                    "objectbox_double:text" -> (dialogue as? DoubleItemBox)?.text = packet.text
                     // Statements
-                    "messagebox:text" -> (dialogue as Statement).text = packet.text
-                    "messagebox:continue" -> (dialogue as Statement).clickToContinue = packet.text == "Click here to continue"
+                    "messagebox:text" -> (dialogue as? Statement)?.text = packet.text
+                    "messagebox:continue" -> (dialogue as? Statement)?.clickToContinue = packet.text == "Click here to continue"
                     else -> {
                         if (packet.text != "Click here to continue") {
                             println("    player.interfaces.sendText(${packet.interfaceId}, ${packet.componentId}, \"${packet.text}\") // $component")
@@ -617,13 +619,18 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             is LocAnim -> println("${indent}obj.anim(\"${animationId(packet.id)}\") // Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation}, id = ${packet.id}")
             is LocDel -> println("${indent}obj.remove(Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation})")
             is MapAnim -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).animate(\"${animationId(packet.id)}\", height = ${packet.height}, delay = ${packet.delay})")
-            is MapProjAnim -> println(
+            is MapProjAnimV1 -> println(
                 "${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).shoot(${gfxId(packet.id)}, Delta(${packet.deltaX}, ${packet.deltaZ}), angle = ${packet.angle}, progress = ${packet.progress}, startTime = ${packet.startTime}, endTime = ${packet.endTime}, startHeight = ${packet.startHeight}, endHeight = ${packet.endHeight}, sourceIndex = ${packet.sourceIndex}, targetIndex = " +
+                    "${packet.targetIndex}) // ${packet.id}"
+            )
+            is MapProjAnimV2 -> println(
+                "${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).shoot(${gfxId(packet.id)}, sourceIndex = ${packet.sourceIndex}, targetIndex = ${packet.targetIndex}, angle = ${packet.angle}, progress = ${packet.progress}, startTime = ${packet.startTime}, endTime = ${packet.endTime}, startHeight = ${packet.startHeight}, endHeight = ${packet.endHeight}, sourceIndex = ${packet.sourceIndex}, " +
+                    "targetIndex = " +
                     "${packet.targetIndex}) // ${packet.id}"
             )
             is ObjAdd -> println("${indent}items.spawn(\"${itemId(packet.id)}\", ${packet.quantity}, Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), timeUntilPublic = ${packet.timeUntilPublic}, timeUntilDespawn = ${packet.timeUntilDespawn}, ownershipType = ${packet.ownershipType}, neverBecomesPublic = ${packet.neverBecomesPublic})")
             is ObjDel -> println("${indent}items.remove(\"${itemId(packet.id)}\", amount = ${packet.quantity}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}))")
-            is SoundArea -> println("${indent}areaSound(\"${soundId(packet.id)}\", delay = ${packet.delay}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone})${if (packet.loops == 1) "" else ", loops = ${packet.loops}"}, radius = ${packet.radius}, size = ${packet.size})")
+            is SoundArea -> println("${indent}areaSound(\"${soundId(packet.id)}\", delay = ${packet.delay}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone})${if (packet.loops == 1) "" else ", loops = ${packet.loops}"}, radius = ${packet.radius}, size = ${packet.size}) // ${packet.id}")
         }
     }
 
@@ -693,7 +700,7 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 if (info.index == 0xFFFFFF) {
                     println("${indent}player.clearWatch()")
                 } else if (info.index >= 0x10000) {
-                    val player = sessionState.getPlayer(info.index - 0x10000)
+                    val player = sessionState.getPlayerOrNull(info.index - 0x10000) ?: return
                     println("${indent}player.watch(${player.name}, ${coordToTile(player.coord)})")
                 } else {
                     val npc = sessionState.getActiveWorld().getNpc(info.index) ?: return
@@ -825,6 +832,8 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 609 -> "EvilLaugh"
                 610, 611, 612, 613 -> "Upset"
                 614, 615, 616, 617 -> "Angry"
+                585 -> "TreeHappy"
+                584 -> "TreeTalk"
                 else -> id.toString()
             }
         }
@@ -832,5 +841,9 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
 }
 
 public fun main() {
-    BinaryToCodeCommand().main(arrayOf("-name", "prince-ali-rescue-full-20250514T133541-0ddf543"))
+    BinaryToCodeCommand().main(arrayOf("-name",
+        "20250624T102833-0ddf543"
+//        "prince-ali-rescue-full-20250514T133541-0ddf543"
+//        "price-ali-rescue-speed-20250514T133541-0ddf543"
+    ))
 }
