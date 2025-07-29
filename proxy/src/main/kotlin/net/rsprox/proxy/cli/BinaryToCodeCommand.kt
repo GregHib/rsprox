@@ -50,6 +50,8 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
     private val name by option("-name")
     private var indent = ""
 
+    private val skipNpcs = false
+
     override fun filter(path: File): Boolean {
         return path.nameWithoutExtension == name
     }
@@ -405,8 +407,32 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             is PlayerInfo -> handlePlayerInfo(sessionState, packet)
             is NpcInfo -> {
                 for ((key, update) in packet.updates) {
-                    if (update is NpcUpdateType) {
-                        println(update)
+                    val npc = sessionState.getActiveWorld().getNpc(key)
+                    if (update is NpcUpdateType.Active) {
+                        if (skipNpcs || update.extendedInfo.isEmpty()) continue
+                        for (info in update.extendedInfo) {
+                            when (info) {
+                                is SequenceExtendedInfo -> println("${indent}npc.anim(\"${animationId(info.id)}\"${if (info.delay != 0) ", delay = ${info.delay}" else ""}) // ${npc.name} ${npc.id} ${info.id}")
+                                is SpotanimExtendedInfo -> for (spot in info.spotanims.values) {
+                                    println("${indent}npc.gfx(\"${animationId(spot.id)}\"${if (spot.delay != 0) ", delay = ${spot.delay}" else ""}${if (spot.height != 0) ", height = ${spot.height}" else ""}) // ${npc.name} ${npc.id} ${spot.id}")
+                                }
+                                is FacePathingEntityExtendedInfo -> {
+                                    val face = sessionState.getPlayerOrNull(info.index) ?: sessionState.getActiveWorld().getNpcOrNull(info.index)
+                                    println("${indent}npc.face(${face}) // ${npc.name} ${npc.id}")
+                                }
+                                is HitExtendedInfo -> {
+                                    for (hit in info.hits) {
+                                        println(
+                                            "${indent}npc.hit(damage = ${hit.value}, offensiveType = \"${
+                                                when (hit.type) {
+                                                    else -> hit.type
+                                                }
+                                            }\") // ${npc.name} ${npc.id}")
+                                    }
+                                }
+//                                    else -> println("$npc - ${info}")
+                            }
+                        }
                     }
                 }
             }
@@ -841,9 +867,12 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
 }
 
 public fun main() {
-    BinaryToCodeCommand().main(arrayOf("-name",
-        "20250624T102833-0ddf543"
+    BinaryToCodeCommand().main(
+        arrayOf(
+            "-name",
+            "20250628T113859-0ddf543"
 //        "prince-ali-rescue-full-20250514T133541-0ddf543"
 //        "price-ali-rescue-speed-20250514T133541-0ddf543"
-    ))
+        )
+    )
 }
