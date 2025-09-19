@@ -714,7 +714,7 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             is TemporaryMoveSpeedExtendedInfo -> println("${indent}player.temporaryMoveType = ${moveType(info.speed)}")
             // Shared
             is ExactMoveExtendedInfo -> {
-                val coord = player!!.coord
+                val coord = player?.coord ?: return
                 println(
                     "${indent}player.exactMoveDelay(Tile(${coord.x - info.deltaX1}, ${coord.z - info.deltaZ1}${if (coord.level == 0) "" else ", ${coord.level}"})${if (info.delay1 == 0) "" else ", startDelay = ${info.delay1}"}, delay = ${info.delay2}, direction = ${angleToDir(info.direction)}) // startDelta = Delta(${info.deltaX1}, ${info.deltaZ1}), endDelta = Delta(${info.deltaX2}, ${
                         info
@@ -870,7 +870,7 @@ public fun main() {
     BinaryToCodeCommand().main(
         arrayOf(
             "-name",
-            "20250628T113859-0ddf543"
+            "20250919T114054-0ddf543"
 //        "prince-ali-rescue-full-20250514T133541-0ddf543"
 //        "price-ali-rescue-speed-20250514T133541-0ddf543"
         )
