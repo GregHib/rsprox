@@ -6,6 +6,7 @@ import net.rsprox.cache.Js5MasterIndex
 import net.rsprox.cache.resolver.HistoricCacheResolver
 import net.rsprox.protocol.game.outgoing.model.misc.client.ServerTickEnd
 import net.rsprox.proxy.binary.BinaryBlob
+import net.rsprox.proxy.cache.CachedCaches
 import net.rsprox.proxy.cache.StatefulCacheProvider
 import net.rsprox.proxy.config.BINARY_PATH
 import net.rsprox.proxy.config.FILTERS_DIRECTORY
@@ -28,7 +29,7 @@ public abstract class Transcriber(name: String) : CliktCommand(name), Runnable {
     override fun run() {
         val decoderLoader = DecoderLoader()
         HuffmanProvider.load()
-        val provider = StatefulCacheProvider(HistoricCacheResolver())
+        val provider = StatefulCacheProvider(CachedCaches(HistoricCacheResolver()))
         val filters = DefaultPropertyFilterSetStore.load(FILTERS_DIRECTORY)
         val settings = DefaultSettingSetStore.load(SETTINGS_DIRECTORY)
         val fileTreeWalk =
@@ -61,7 +62,7 @@ public abstract class Transcriber(name: String) : CliktCommand(name), Runnable {
             ),
         )
         decoderLoader.load(statefulCacheProvider)
-        val latestPlugin = decoderLoader.getDecoder(binary.header.revision)
+        val latestPlugin = decoderLoader.getDecoder(binary.header.revision, statefulCacheProvider)
         val session = DecodingSession(binary, latestPlugin)
         val sessionState = SessionState(binary.header.revision, DefaultSettingSetStore(binaryPath))
         val sessionTracker =
