@@ -137,7 +137,7 @@ public class World(
     }
 
     public fun getNpc(index: Int): Npc {
-        return npcs[index] ?: error("Npc $index does not exist in world ${this.index}")
+        return npcs[index] ?: Npc(index, 0, 0, 0, CoordGrid.INVALID)//error("Npc $index does not exist in world ${this.index}")
     }
 
     public fun getNpcOrNull(index: Int): Npc? {
