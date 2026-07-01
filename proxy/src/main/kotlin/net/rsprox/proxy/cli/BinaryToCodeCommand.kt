@@ -3,17 +3,24 @@ package net.rsprox.proxy.cli
 import com.github.ajalt.clikt.parameters.options.option
 import net.rsprot.protocol.message.IncomingMessage
 import net.rsprox.protocol.common.CoordGrid
-import net.rsprox.protocol.game.incoming.model.locs.OpLoc
+import net.rsprox.protocol.game.incoming.model.locs.OpLocV1
+import net.rsprox.protocol.game.incoming.model.locs.OpLocV2
 import net.rsprox.protocol.game.incoming.model.locs.OpLocT
-import net.rsprox.protocol.game.incoming.model.npcs.OpNpc
+import net.rsprox.protocol.game.incoming.model.npcs.OpNpcV1
+import net.rsprox.protocol.game.incoming.model.npcs.OpNpcV2
 import net.rsprox.protocol.game.incoming.model.npcs.OpNpcT
-import net.rsprox.protocol.game.incoming.model.objs.OpObj
+import net.rsprox.protocol.game.incoming.model.objs.OpObjV1
+import net.rsprox.protocol.game.incoming.model.objs.OpObjV2
 import net.rsprox.protocol.game.incoming.model.objs.OpObjT
 import net.rsprox.protocol.game.incoming.model.players.OpPlayer
 import net.rsprox.protocol.game.incoming.model.players.OpPlayerT
 import net.rsprox.protocol.game.incoming.model.resumed.ResumePauseButton
 import net.rsprox.protocol.game.outgoing.model.IncomingZoneProt
+import net.rsprox.protocol.game.outgoing.model.camera.CamLookAtV2
+import net.rsprox.protocol.game.outgoing.model.camera.CamMoveToV2
 import net.rsprox.protocol.game.outgoing.model.camera.CamReset
+import net.rsprox.protocol.game.outgoing.model.camera.CamRotateTo
+import net.rsprox.protocol.game.outgoing.model.camera.CamShake
 import net.rsprox.protocol.game.outgoing.model.info.npcinfo.NpcInfo
 import net.rsprox.protocol.game.outgoing.model.info.npcinfo.NpcUpdateType
 import net.rsprox.protocol.game.outgoing.model.info.npcinfo.extendedinfo.*
@@ -299,11 +306,19 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 println("itemOnPlayerOperate(\"${itemId(packet.selectedObj)}\") {}")
                 resetDialogue()
             }
-            is OpLoc -> {
+            is OpLocV1 -> {
                 println("objectOperate(\"${packet.op}\", \"${objectId(packet.id)}\") {} // x = ${packet.x}, y = ${packet.z}, option = ${packet.op} id = ${packet.id}")
                 resetDialogue()
             }
-            is OpObj -> {
+            is OpObjV1 -> {
+                println("floorItemOperate(id = \"${itemId(packet.id)}\", x = ${packet.x}, y = ${packet.z}, option = ${packet.op}) // ${packet.id}")
+                resetDialogue()
+            }
+            is OpLocV2 -> {
+                println("objectOperate(\"${packet.op}\", \"${objectId(packet.id)}\") {} // x = ${packet.x}, y = ${packet.z}, option = ${packet.op} id = ${packet.id}")
+                resetDialogue()
+            }
+            is OpObjV2 -> {
                 println("floorItemOperate(id = \"${itemId(packet.id)}\", x = ${packet.x}, y = ${packet.z}, option = ${packet.op}) // ${packet.id}")
                 resetDialogue()
             }
@@ -312,7 +327,12 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 println("playerOperate(tile = ${coordToTile(player.coord)}, option = ${packet.op})")
                 resetDialogue()
             }
-            is OpNpc -> {
+            is OpNpcV1 -> {
+                val npc = sessionState.getActiveWorld().getNpc(packet.index)
+                println("npcOperate(id = \"${npcId(npc.id)}\", tile = ${coordToTile(npc.coord)}, control = ${packet.controlKey}, option = ${packet.op}) // ${npc.id}")
+                resetDialogue()
+            }
+            is OpNpcV2 -> {
                 val npc = sessionState.getActiveWorld().getNpc(packet.index)
                 println("npcOperate(id = \"${npcId(npc.id)}\", tile = ${coordToTile(npc.coord)}, control = ${packet.controlKey}, option = ${packet.op}) // ${npc.id}")
                 resetDialogue()
@@ -437,6 +457,9 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 }
             }
             // camera
+            is CamLookAtV2 -> println("${indent}turnCamera(tile = Tile(${packet.x}, ${packet.z}), height = ${packet.height}, speed = ${packet.rate}, acceleration = ${packet.rate2})")
+            is CamMoveToV2 -> println("${indent}moveCamera(tile = Tile(${packet.x}, ${packet.z}), height = ${packet.height}, speed = ${packet.rate}, acceleration = ${packet.rate2})")
+            is CamShake -> println("${indent}shakeCamera(type = ${packet.type}, intensity = ${packet.randomAmount}, sine = ${packet.sineAmount}, frequency = ${packet.sineFrequency})")
             is CamReset -> println("${indent}clearCamera()")
             // varp
             is VarpSmall -> if (packet.id != 3077 && packet.id != 3076 && packet.id != 3079 && packet.id != 1042) {
@@ -483,6 +506,14 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                     println("${indent}exp(Skill.${skillName}, ${packet.experience - (oldXp ?: 0)})")
                 }
             }
+            is IfSetModelV1 -> {
+                val component = componentId(packet.interfaceId, packet.componentId)
+                println("interfaces.sendModel(\"$component\", ${packet.model}) // ${packet.interfaceId}:${packet.componentId}")
+            }
+            is IfSetModelV2 -> {
+                val component = componentId(packet.interfaceId, packet.componentId)
+                println("interfaces.sendModel(\"$component\", ${packet.model}) // ${packet.interfaceId}:${packet.componentId}")
+            }
             is IfSetObject -> {
                 val component = componentId(packet.interfaceId, packet.componentId)
                 when (component) {
@@ -498,10 +529,11 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                         (dialogue as? DoubleItemBox)?.item2 = packet.obj
                         (dialogue as? DoubleItemBox)?.zoom2 = packet.count
                     }
+                    else -> println(packet)
                 }
             }
             is IfOpenSub -> {
-                if (packet.destinationInterfaceId == 162 && packet.destinationComponentId == 566) {
+                if (packet.destinationInterfaceId == 162 && (packet.destinationComponentId == 566 || packet.destinationComponentId == 567)) {
                     if (!createDialogue(packet.interfaceId)) {
                         println(packet)
                     }
@@ -644,7 +676,7 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             is LocAddChangeV2 -> println("${indent}objects.add(\"${objectId(packet.id)}\", tile = Tile(${packet.xInZone}, ${packet.zInZone}) shape = ${packet.shape}, rotation = ${packet.rotation}) // ${packet.id}")
             is LocAnim -> println("${indent}obj.anim(\"${animationId(packet.id)}\") // Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation}, id = ${packet.id}")
             is LocDel -> println("${indent}obj.remove(Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation})")
-            is MapAnim -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).animate(\"${animationId(packet.id)}\", height = ${packet.height}, delay = ${packet.delay})")
+            is MapAnim -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).animate(\"${animationId(packet.id)}\", height = ${packet.height}, delay = ${packet.delay}) // ${packet.id}")
             is MapProjAnimV1 -> println(
                 "${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).shoot(${gfxId(packet.id)}, Delta(${packet.deltaX}, ${packet.deltaZ}), curve = ${packet.angle}, sizeOffset = ${packet.progress}, startTime = ${packet.startTime}, endTime = ${packet.endTime}, startHeight = ${packet.startHeight}, endHeight = ${packet.endHeight}, sourceIndex = ${packet.sourceIndex}, targetIndex = " +
                     "${packet.targetIndex}) // ${packet.id}"
@@ -867,10 +899,11 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
 }
 
 public fun main() {
+//    System.setOut(PrintStream(File("./temp.txt")))
     BinaryToCodeCommand().main(
         arrayOf(
             "-name",
-            "20260226T120117-0ddf543"
+            "20260506T183315-0ddf543"
 //        "prince-ali-rescue-full-20250514T133541-0ddf543"
 //        "price-ali-rescue-speed-20250514T133541-0ddf543"
         )

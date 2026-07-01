@@ -54,14 +54,18 @@ public class BinaryToJournalsCommand : Transcriber(name = "journals") {
 
     override fun processPacket(tick: Int, sessionState: SessionState, packet: IncomingMessage) {
         when (packet) {
-            is IfSetText -> when (val component = componentId(packet.interfaceId, packet.componentId)) {
-                "questjournal:title" -> journals.add(Journal(title = packet.text))
-                else -> if (component.startsWith("questjournal:qj")) {
-                    val journal = journals.last()
-                    journal.lines[packet.componentId] =
-                        packet.text
-                            .replace("<col=000080>", "<navy>")
-                            .replace("<col=800000>", "<maroon>")
+            is IfSetText -> {
+                when (val component = componentId(packet.interfaceId, packet.componentId)) {
+                    "questjournal:title", "questjournal:textlayer" -> journals.add(Journal(title = packet.text))
+                    else -> if (component.startsWith("questjournal:qj")) {
+                        val journal = journals.lastOrNull() ?: return
+                        journal.lines[packet.componentId] =
+                            packet.text
+                                .replace("<col=000080>", "<navy>")
+                                .replace("<col=800000>", "<maroon>")
+                    } else {
+                        println("${packet.interfaceId}:${packet.componentId} ${componentId(packet.interfaceId, packet.componentId)} = ${packet.text}")
+                    }
                 }
             }
             else -> {
@@ -72,5 +76,5 @@ public class BinaryToJournalsCommand : Transcriber(name = "journals") {
 }
 
 public fun main() {
-    BinaryToJournalsCommand().main(arrayOf("-name", "prince-ali-rescue-full-20250514T133541-0ddf543"))
+    BinaryToJournalsCommand().main(arrayOf("-name", "20260403T123516-0ddf543"))
 }
