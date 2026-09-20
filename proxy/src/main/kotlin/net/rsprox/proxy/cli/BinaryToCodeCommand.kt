@@ -44,6 +44,7 @@ import net.rsprox.protocol.game.outgoing.model.varp.VarpSmall
 import net.rsprox.protocol.game.outgoing.model.IncomingServerGameMessage
 import net.rsprox.protocol.game.outgoing.model.zone.header.UpdateZonePartialEnclosed
 import net.rsprox.protocol.game.outgoing.model.zone.payload.*
+import net.rsprox.proxy.cli.BinaryToCodeCommand.NpcChat.Companion.regex
 import net.rsprox.protocol.rs3.game.incoming.model.dialog.ResumePauseButton as Rs3ResumePauseButton
 import net.rsprox.protocol.rs3.game.incoming.model.locs.OpLoc as Rs3OpLoc
 import net.rsprox.protocol.rs3.game.incoming.model.locs.OpLocT as Rs3OpLocT
@@ -68,6 +69,7 @@ import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfMoveSub as Rs3If
 import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfOpenSub as Rs3IfOpenSub
 import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfOpenTop as Rs3IfOpenTop
 import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetAnim as Rs3IfSetAnim
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetGraphic as Rs3IfSetGraphic
 import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetHide as Rs3IfSetHide
 import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetModel as Rs3IfSetModel
 import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetObject as Rs3IfSetObject
@@ -193,12 +195,15 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 append(">")
             }
             append("(\"")
-            append(text.replace("<br>", " "))
+            append(text.replace("<br>", " ").replace(regex, ""))
             append("\"")
             if (!clickToContinue) {
                 append(", clickToContinue = false")
             }
             append(")")
+        }
+        companion object {
+            val regex = Regex("<p=[0-9]+>")
         }
     }
 
@@ -217,7 +222,7 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 append(">")
             }
             append("(\"")
-            append(text.replace("<br>", " "))
+            append(text.replace("<br>", " ").replace(regex, ""))
             append("\"")
             if (!clickToContinue) {
                 append(", clickToContinue = false")
@@ -226,13 +231,20 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
         }
     }
 
-    private data class ItemBox(override var text: String = "", var item: Int = -1, var zoom: Int = -1) : Dialogue() {
+    private data class ItemBox(override var text: String = "", var item: Int = -1, var zoom: Int = -1, var sprite: Int = -1) : Dialogue() {
         override fun print(indent: Int) = buildString {
             indent(indent)
             append("item(\"")
-            append(itemId(item))
-            append("\", \"")
+            if (item != -1) {
+                append("\"")
+                append(itemId(item))
+                append("\"")
+            }
+            append(", \"")
             append(text.replace("<br>", " "))
+            if (sprite != -1) {
+                append(", sprite = $sprite")
+            }
             append("\") // ")
             append(item)
         }
@@ -442,6 +454,16 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                         (dialogue as Choice).text = packet.values[0] as String
                         for (option in packet.values[1].toString().split("|")) {
                             (dialogue as Choice).options.add(option)
+                        }
+                    }
+                    5589 -> { // rs3 choice_v2 setup
+                        if (dialogue == null) {
+                            createRs3Dialogue(1188)
+                        }
+                        val count = packet.values[1] as Int
+                        (dialogue as Choice).text = packet.values[0] as String
+                        for (i in 0 until count) {
+                            (dialogue as Choice).options.add(packet.values[2 + i] as String)
                         }
                     }
                     2046 -> { // skillmulti_setup
@@ -702,21 +724,21 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 val iface = packet.combinedId ushr 16
                 val comp = packet.combinedId and 0xFFFF
                 val component = componentId(iface, comp, rs3 = true)
-                if (component in setOf(
+                val optionIndex = component.removePrefix("choice_v2:option_").toIntOrNull()
+                if (optionIndex != null) {
+                    // The option number is encoded in the clicked component itself, not packet.sub.
+                    choice = optionIndex
+                } else if (component in setOf(
                         "chat_v2_left:click_continue",
                         "objbox_v2:click_continue",
-                        "choice_v2:option_1",
-                        "choice_v2:option_2",
-                        "choice_v2:option_3",
-                        "choice_v2:option_4",
-                        "choice_v2:option_5",
                         "chat_v2_right:click_continue",
                         "object_choice:button_graphics_2",
                         "makex2012:make_click",
                         "confirm_destroy_v2:button_all",
+                        "mesbox_v2:click_continue",
                     )
                 ) {
-                    choice = packet.sub
+                    choice = 0
                 } else {
                     println("Continue $component")
                 }
@@ -808,66 +830,79 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 }
             }
             // interfaces / dialogues
-            is Rs3IfSetModel -> println("interfaces.sendModel(\"${rs3Component(packet.componentHash)}\", ${packet.modelId})")
+            is Rs3IfSetModel -> {
+                println("interfaces.sendModel(\"${rs3Component(packet.componentHash)}\", ${packet.modelId})")
+            }
             is Rs3IfSetObject -> {
                 val (iface, comp) = rs3ComponentIds(packet.componentHash)
                 when (val component = componentId(iface, comp, rs3 = true)) {
-                    "objectbox:item" -> {
-                        (dialogue as? ItemBox)?.item = packet.objId
-                        (dialogue as? ItemBox)?.zoom = packet.count
-                    }
-                    "objectbox_double:model1" -> {
-                        (dialogue as? DoubleItemBox)?.item1 = packet.objId
-                        (dialogue as? DoubleItemBox)?.zoom1 = packet.count
-                    }
-                    "objectbox_double:model2" -> {
-                        (dialogue as? DoubleItemBox)?.item2 = packet.objId
-                        (dialogue as? DoubleItemBox)?.zoom2 = packet.count
-                    }
+//                    "objectbox:item" -> {
+//                        (dialogue as? ItemBox)?.item = packet.objId
+//                        (dialogue as? ItemBox)?.zoom = packet.count
+//                    }
+//                    "objectbox_double:model1" -> {
+//                        (dialogue as? DoubleItemBox)?.item1 = packet.objId
+//                        (dialogue as? DoubleItemBox)?.zoom1 = packet.count
+//                    }
+//                    "objectbox_double:model2" -> {
+//                        (dialogue as? DoubleItemBox)?.item2 = packet.objId
+//                        (dialogue as? DoubleItemBox)?.zoom2 = packet.count
+//                    }
                     else -> println("interfaces.sendObject(\"${component}\", \"${itemId(packet.objId, rs3 = true)}\", ${packet.count}) // ${packet.objId}")
                 }
             }
             is Rs3IfSetAnim -> {
                 val (iface, comp) = rs3ComponentIds(packet.componentHash)
                 when (val component = componentId(iface, comp, rs3 = true)) {
-                    "chat_v2_left:chathead_1" -> (dialogue as? NpcChat)?.animation = packet.animId
-                    "chat_v2_right:chathead_1" -> (dialogue as? PlayerChat)?.animation = packet.animId
+                    "chat_v2_left:chathead_1" -> { pendingRs3Anim[component] = packet.animId; (dialogue as? NpcChat)?.animation = packet.animId }
+                    "chat_v2_right:chathead_1" -> { pendingRs3Anim[component] = packet.animId; (dialogue as? PlayerChat)?.animation = packet.animId }
                     else -> println("interfaces.sendAnim(\"${component}\", \"${animationId(packet.animId, rs3 = true)}\") // ${packet.animId}")
+                }
+            }
+            is Rs3IfSetGraphic -> {
+                val (iface, comp) = rs3ComponentIds(packet.componentHash)
+                when (val component = componentId(iface, comp, rs3 = true)) {
+                    "objbox_v2:graphic_box" -> {(dialogue as? ItemBox)?.sprite = packet.graphicId }
+                    else -> println("interfaces.sendSprite(\"${component.substringBefore(":")}\", \"${component.substringAfter(":")}\", ${packet.graphicId}")
                 }
             }
             is Rs3IfSetText -> {
                 val (iface, comp) = rs3ComponentIds(packet.componentHash)
                 when (val component = componentId(iface, comp, rs3 = true)) {
                     // Npc
-                    "chat_v2_left:title_text" -> (dialogue as? NpcChat)?.name = packet.text
-                    "chat_v2_left:click_continue" -> (dialogue as? NpcChat)?.clickToContinue = packet.text == "Click here to continue"
-                    "chat_v2_left:chat_text" -> (dialogue as? NpcChat)?.text = packet.text
-//                    // Player
-                    "chat_v2_right:title_text" -> (dialogue as? PlayerChat)?.name = packet.text
-                    "chat_v2_right:chat_text" -> (dialogue as? PlayerChat)?.text = packet.text
-                    "chat_v2_right:click_continue" -> (dialogue as? PlayerChat)?.clickToContinue = packet.text == "Click here to continue"
-//                    // Items
-                    "objbox_v2:objbox_text" -> (dialogue as? ItemBox)?.text = packet.text
+                    "chat_v2_left:title_text" -> { pendingRs3Text[component] = packet.text; (dialogue as? NpcChat)?.name = packet.text }
+                    "chat_v2_left:click_continue" -> { pendingRs3Text[component] = packet.text }
+                    "chat_v2_left:chat_text" -> { pendingRs3Text[component] = packet.text; (dialogue as? NpcChat)?.text = packet.text }
+                    // Player
+                    "chat_v2_right:title_text" -> { pendingRs3Text[component] = packet.text; (dialogue as? PlayerChat)?.name = packet.text }
+                    "chat_v2_right:chat_text" -> { pendingRs3Text[component] = packet.text; (dialogue as? PlayerChat)?.text = packet.text }
+                    "chat_v2_right:click_continue" -> { pendingRs3Text[component] = packet.text }
+                    // Items
+                    "objbox_v2:objbox_text" -> { pendingRs3Text[component] = packet.text; (dialogue as? ItemBox)?.text = packet.text }
 //                    "objectbox_double:text" -> (dialogue as? DoubleItemBox)?.text = packet.text
-//                    // Statements
-//                    "messagebox:text" -> (dialogue as? Statement)?.text = packet.text
-//                    "messagebox:continue" -> (dialogue as? Statement)?.clickToContinue = packet.text == "Click here to continue"
+                    // Statements
+                    "mesbox_v2:mesbox_text" -> { pendingRs3Text[component] = packet.text; (dialogue as? Statement)?.text = packet.text }
+                    "mesbox_v2:click_continue" -> { pendingRs3Text[component] = packet.text }
                     else -> println("interfaces.sendText(\"${component}\", \"${packet.text}\")")
                 }
             }
             is Rs3IfSetHide -> {
                 val (id, comp) = rs3ComponentIds(packet.componentHash)
+                val component = componentId(id, comp, rs3 = true)
+                when (component) {
+                    "chat_v2_left:click_continue_button" -> pendingRs3Cont[component] = !packet.hidden
+                    "chat_v2_right:click_continue_button" -> pendingRs3Cont[component] = !packet.hidden
+                    "mesbox_v2:click_continue" -> pendingRs3Cont[component] = !packet.hidden
+                    "objbox_v2:click_continue_button" -> {
+            //                    (dialogue as? ItemBox)?.clickToContinue = !packet.hidden
+                    }
+                }
                 println("interfaces.sendVisibility(\"${componentId(id, comp, rs3 = true)}\", ${!packet.hidden})")
             }
             is Rs3IfOpenSub -> {
-                // Warnings
-//                if (packet.childId == 162 && (packet.childId == 566 || packet.childId == 567)) {
-//                    if (!createRs3Dialogue(packet.childId)) {
-//                        println(packet)
-//                    }
-//                } else {
-                println("open(\"${interfaceId(packet.childId, rs3 = true)}\") // ${packet.childId} in ${rs3Component(packet.componentHash)}")
-//                }
+                if (!createRs3Dialogue(packet.childId)) {
+                    println("open(\"${interfaceId(packet.childId, rs3 = true)}\") // ${packet.childId} in ${rs3Component(packet.componentHash)}")
+                }
             }
             is Rs3IfOpenTop -> println("openTop(\"${interfaceId(packet.interfaceId, rs3 = true)}\") // ${packet.interfaceId}")
             is Rs3IfCloseSub -> {
@@ -993,17 +1028,51 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             1184 -> NpcChat() // chat_v2_left
             1191 -> PlayerChat() // chat_v2_right
             1188 -> Choice() // choice_v2
-            11 -> DoubleItemBox() // objectbox_double
-            193 -> ItemBox() // objectbox
-            229 -> Statement() //messagebox
-            270 -> MakeAmount() //skillmulti
+            11 -> DoubleItemBox() // objectbox_double (unconfirmed rs3 id)
+            1189 -> ItemBox() // objbox_v2
+            1186 -> Statement() // mesbox_v2
+            1370 -> MakeAmount() // makex2012
             else -> return false
         }
         if (root == null) {
             dialogues.add(dialogue!!)
             root = dialogue
         }
+        applyPendingRs3DialogueFields()
         return true
+    }
+
+    private val pendingRs3Text = mutableMapOf<String, String>()
+    private val pendingRs3Anim = mutableMapOf<String, Int>()
+    private val pendingRs3Cont = mutableMapOf<String, Boolean>()
+
+    /**
+     * RS3 sends [Rs3IfSetText]/[Rs3IfSetAnim] (and other component setters) for a
+     * sub-interface's components *before* the [Rs3IfOpenSub] that actually opens it,
+     * unlike OSRS. Values are buffered here and re-applied once the matching [Dialogue]
+     * is created.
+     */
+    private fun applyPendingRs3DialogueFields() {
+        when (val d = dialogue) {
+            is NpcChat -> {
+                pendingRs3Text["chat_v2_left:title_text"]?.let { d.name = it }
+                pendingRs3Text["chat_v2_left:chat_text"]?.let { d.text = it }
+                pendingRs3Cont["chat_v2_right:click_continue_button"]?.let { d.clickToContinue = it }
+                pendingRs3Anim["chat_v2_left:chathead_1"]?.let { d.animation = it }
+            }
+            is PlayerChat -> {
+                pendingRs3Text["chat_v2_right:title_text"]?.let { d.name = it }
+                pendingRs3Text["chat_v2_right:chat_text"]?.let { d.text = it }
+                pendingRs3Cont["chat_v2_right:click_continue_button"]?.let { d.clickToContinue = it }
+                pendingRs3Anim["chat_v2_right:chathead_1"]?.let { d.animation = it }
+            }
+            is ItemBox -> pendingRs3Text["objbox_v2:objbox_text"]?.let { d.text = it }
+            is Statement -> {
+                pendingRs3Text["mesbox_v2:mesbox_text"]?.let { d.text = it }
+                pendingRs3Cont["mesbox_v2:click_continue"]?.let { d.clickToContinue = it }
+            }
+            else -> {}
+        }
     }
 
     /** Shared by OSRS's ServerTickEnd and RS3's TickEnd: links the just-finished dialogue into the tree and advances the tick print. */
@@ -1012,21 +1081,18 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
         // Link dialogues
         val previous = previous
         if (previous != null && current != null) {
-            if (choice == -1 || choice == 0 || choice == null) { // continue
-                if (previous !is Choice) {
-                    if (previous.next == null) {
-                        previous.next = current
-                    }
-                } else {
-                    println("Can't link choice $previous $current")
-                }
-            } else {
-                val prevChoice = previous as Choice
-                val option = prevChoice.options[choice!! - 1]
+            if (previous is Choice && choice != null && choice != -1 && choice != 0 && choice!! - 1 in previous.options.indices) {
+                val option = previous.options[choice!! - 1]
                 val existing = optionDialogues[option]
                 if (existing == null) {
                     optionDialogues[option] = current
                 }
+            } else if (previous !is Choice) {
+                if (previous.next == null) {
+                    previous.next = current
+                }
+            } else {
+                println("Can't link choice $previous $current")
             }
         }
         if (current != null) {
@@ -1319,6 +1385,26 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
 
         fun dialogueAnim(id: Int): String {
             return when (id) {
+                // rs3
+                9827, 9828, 9829, 9830, 37930 -> "Quiz"
+                9831, 9832, 9833, 9834 -> "Bored"
+                9847, 9848, 9849, 9850 -> "Happy"
+                9746, 9747, 9748, 9749 -> "Shock"
+                9811, 9812, 9813, 9814 -> "Confused"
+                9807, 9808, 9809, 9810, 37902 -> "Neutral"
+                9836, 9837, 9838, 9839 -> "Shifty"
+                9773, 9774, 9775, 9776 -> "Scared"
+                9757, 9758, 9759, 9760 -> "Disheartened"
+                9843, 9844, 9845, 9846, 37904 -> "Pleased"
+                9835 -> "Drunk"
+                9840 -> "Laugh"
+                9842 -> "EvilLaugh"
+                9761, 9762, 9763, 9764, 37911 -> "Sad"
+                9785, 9786, 9787, 9788 -> "Angry"
+                9781, 9782, 9783, 9784 -> "Frustrated"
+                585 -> "TreeHappy"
+                584 -> "TreeTalk"
+                // osrs
                 554, 555, 556, 557 -> "Quiz"
                 562, 563, 564, 565 -> "Bored"
                 567, 568, 569, 570 -> "Happy"
