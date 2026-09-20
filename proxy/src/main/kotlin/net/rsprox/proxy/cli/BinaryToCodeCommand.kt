@@ -1433,13 +1433,10 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
 }
 
 public fun main() {
-//    System.setOut(PrintStream(File("./temp.txt")))
     BinaryToCodeCommand().main(
         arrayOf(
             "-name",
             "20260920T121631-0ddf543"
-//        "prince-ali-rescue-full-20250514T133541-0ddf543"
-//        "price-ali-rescue-speed-20250514T133541-0ddf543"
         )
     )
 }

@@ -87,6 +87,9 @@ public class Rs3World {
     /** Presentation only: never replace player/NPC or decoder state with source-map positions. */
     public fun instanceCoord(coord: CoordGrid): CoordGrid? = instanceMap?.tile(coord)
 
+    /** The rotation (0-3) of the static room template placed at this destination tile, when known. */
+    public fun instanceRotation(coord: CoordGrid): Int? = instanceMap?.rotation(coord)
+
     internal fun instanceFineCoord(
         level: Int,
         x: Int,
