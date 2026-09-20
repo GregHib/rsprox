@@ -5,7 +5,9 @@ import net.rsprot.protocol.message.IncomingMessage
 import net.rsprox.cache.Js5MasterIndex
 import net.rsprox.cache.resolver.HistoricCacheResolver
 import net.rsprox.protocol.game.outgoing.model.misc.client.ServerTickEnd
+import net.rsprox.protocol.rs3.game.outgoing.model.misc.client.TickEnd
 import net.rsprox.proxy.binary.BinaryBlob
+import net.rsprox.proxy.binary.isRuneScape3
 import net.rsprox.proxy.cache.CachedCaches
 import net.rsprox.proxy.cache.StatefulCacheProvider
 import net.rsprox.proxy.config.BINARY_PATH
@@ -15,9 +17,12 @@ import net.rsprox.proxy.filters.DefaultPropertyFilterSetStore
 import net.rsprox.proxy.huffman.HuffmanProvider
 import net.rsprox.proxy.plugin.DecoderLoader
 import net.rsprox.proxy.plugin.DecodingSession
+import net.rsprox.proxy.rs3.binary.Rs3BinaryTranscriber
 import net.rsprox.proxy.settings.DefaultSettingSetStore
 import net.rsprox.proxy.util.NopSessionMonitor
 import net.rsprox.shared.StreamDirection
+import net.rsprox.shared.filters.PropertyFilterSetStore
+import net.rsprox.shared.settings.SettingSetStore
 import net.rsprox.transcriber.state.SessionState
 import net.rsprox.transcriber.state.SessionTracker
 import java.io.File
@@ -41,7 +46,7 @@ public abstract class Transcriber(name: String) : CliktCommand(name), Runnable {
                 .map { it to BinaryBlob.decode(it, filters, settings) }
                 .sortedBy { it.second.header.revision }
         for ((path, blob) in fileTreeWalk) {
-            simpleTranscribe(path, blob, decoderLoader, provider)
+            simpleTranscribe(path, blob, decoderLoader, provider, filters, settings)
         }
     }
 
@@ -54,7 +59,32 @@ public abstract class Transcriber(name: String) : CliktCommand(name), Runnable {
         binary: BinaryBlob,
         decoderLoader: DecoderLoader,
         statefulCacheProvider: StatefulCacheProvider,
+        filters: PropertyFilterSetStore,
+        settings: SettingSetStore,
     ) {
+        if (binary.header.isRuneScape3()) {
+            val sessionState = SessionState(binary.header.revision, DefaultSettingSetStore(binaryPath))
+            sessionState.createWorld(-1)
+            sessionState.setActiveWorld(-1, 0)
+            var tick = 0
+            Rs3BinaryTranscriber.transcribe(binaryPath, binary, filters, settings, null) { event ->
+                when (event) {
+                    is Rs3BinaryTranscriber.Event.LobbyTransfer -> {
+                        sessionState.localPlayerIndex = event.playerIndex
+                    }
+                    is Rs3BinaryTranscriber.Event.Packet -> {
+                        if (tick != 0) {
+                            processPacket(tick, sessionState, event.message)
+                        }
+                        if (event.message is TickEnd) {
+                            tick++
+                        }
+                    }
+                }
+            }
+            echo("Binary file decoded ${binaryPath.nameWithoutExtension}")
+            return
+        }
         statefulCacheProvider.update(
             Js5MasterIndex.trimmed(
                 binary.header.revision,

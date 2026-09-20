@@ -17,9 +17,10 @@ import net.rsprox.protocol.game.incoming.model.players.OpPlayerT
 import net.rsprox.protocol.game.incoming.model.resumed.ResumePauseButton
 import net.rsprox.protocol.game.outgoing.model.IncomingZoneProt
 import net.rsprox.protocol.game.outgoing.model.camera.CamLookAtV2
+import net.rsprox.protocol.game.outgoing.model.camera.CamLookAtV3
 import net.rsprox.protocol.game.outgoing.model.camera.CamMoveToV2
+import net.rsprox.protocol.game.outgoing.model.camera.CamMoveToV3
 import net.rsprox.protocol.game.outgoing.model.camera.CamReset
-import net.rsprox.protocol.game.outgoing.model.camera.CamRotateTo
 import net.rsprox.protocol.game.outgoing.model.camera.CamShake
 import net.rsprox.protocol.game.outgoing.model.info.npcinfo.NpcInfo
 import net.rsprox.protocol.game.outgoing.model.info.npcinfo.NpcUpdateType
@@ -40,11 +41,69 @@ import net.rsprox.protocol.game.outgoing.model.sound.MidiSongV2
 import net.rsprox.protocol.game.outgoing.model.sound.SynthSound
 import net.rsprox.protocol.game.outgoing.model.varp.VarpLarge
 import net.rsprox.protocol.game.outgoing.model.varp.VarpSmall
+import net.rsprox.protocol.game.outgoing.model.IncomingServerGameMessage
 import net.rsprox.protocol.game.outgoing.model.zone.header.UpdateZonePartialEnclosed
 import net.rsprox.protocol.game.outgoing.model.zone.payload.*
+import net.rsprox.protocol.rs3.game.incoming.model.dialog.ResumePauseButton as Rs3ResumePauseButton
+import net.rsprox.protocol.rs3.game.incoming.model.locs.OpLoc as Rs3OpLoc
+import net.rsprox.protocol.rs3.game.incoming.model.locs.OpLocT as Rs3OpLocT
+import net.rsprox.protocol.rs3.game.incoming.model.npcs.OpNpc as Rs3OpNpc
+import net.rsprox.protocol.rs3.game.incoming.model.npcs.OpNpcT as Rs3OpNpcT
+import net.rsprox.protocol.rs3.game.incoming.model.objs.OpObj as Rs3OpObj
+import net.rsprox.protocol.rs3.game.incoming.model.objs.OpObjT as Rs3OpObjT
+import net.rsprox.protocol.rs3.game.incoming.model.players.OpPlayer as Rs3OpPlayer
+import net.rsprox.protocol.rs3.game.incoming.model.players.OpPlayerT as Rs3OpPlayerT
+import net.rsprox.protocol.rs3.game.outgoing.model.camera.CamLookAt as Rs3CamLookAt
+import net.rsprox.protocol.rs3.game.outgoing.model.camera.CamMoveTo as Rs3CamMoveTo
+import net.rsprox.protocol.rs3.game.outgoing.model.camera.CamReset as Rs3CamReset
+import net.rsprox.protocol.rs3.game.outgoing.model.camera.CamShake as Rs3CamShake
+import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.NpcInfo as Rs3NpcInfo
+import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.NpcUpdateType as Rs3NpcUpdateType
+import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.extendedinfo.AnimationExtendedInfo as Rs3AnimationExtendedInfo
+import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.PlayerInfo as Rs3PlayerInfo
+import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.PlayerUpdateType as Rs3PlayerUpdateType
+import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.extendedinfo.PlayerExtendedInfo as Rs3PlayerExtendedInfo
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfCloseSub as Rs3IfCloseSub
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfMoveSub as Rs3IfMoveSub
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfOpenSub as Rs3IfOpenSub
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfOpenTop as Rs3IfOpenTop
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetAnim as Rs3IfSetAnim
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetHide as Rs3IfSetHide
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetModel as Rs3IfSetModel
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetObject as Rs3IfSetObject
+import net.rsprox.protocol.rs3.game.outgoing.model.interfaces.IfSetText as Rs3IfSetText
+import net.rsprox.protocol.rs3.game.outgoing.model.inv.UpdateInvFull as Rs3UpdateInvFull
+import net.rsprox.protocol.rs3.game.outgoing.model.inv.UpdateInvPartial as Rs3UpdateInvPartial
+import net.rsprox.protocol.rs3.game.outgoing.model.misc.client.TickEnd as Rs3TickEnd
+import net.rsprox.protocol.rs3.game.outgoing.model.misc.player.MessageGame as Rs3MessageGame
+import net.rsprox.protocol.rs3.game.outgoing.model.misc.player.UpdateStat as Rs3UpdateStat
+import net.rsprox.protocol.rs3.game.outgoing.model.sound.MidiJingle as Rs3MidiJingle
+import net.rsprox.protocol.rs3.game.outgoing.model.sound.MidiSong as Rs3MidiSong
+import net.rsprox.protocol.rs3.game.outgoing.model.sound.SynthSound as Rs3SynthSound
+import net.rsprox.protocol.rs3.game.outgoing.model.varbit.Varbit as Rs3Varbit
+import net.rsprox.protocol.rs3.game.outgoing.model.varbit.VarbitLarge as Rs3VarbitLarge
+import net.rsprox.protocol.rs3.game.outgoing.model.varbit.VarbitSmall as Rs3VarbitSmall
+import net.rsprox.protocol.rs3.game.outgoing.model.varp.VarpLarge as Rs3VarpLarge
+import net.rsprox.protocol.rs3.game.outgoing.model.varp.VarpLong as Rs3VarpLong
+import net.rsprox.protocol.rs3.game.outgoing.model.varp.VarpSmall as Rs3VarpSmall
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.header.UpdateZonePartialEnclosed as Rs3UpdateZonePartialEnclosed
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.LocAddChange as Rs3LocAddChange
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.LocAnim as Rs3LocAnim
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.LocDel as Rs3LocDel
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapAnim as Rs3MapAnim
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapAnimV1 as Rs3MapAnimV1
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapAnimV2 as Rs3MapAnimV2
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapProjAnim as Rs3MapProjAnim
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapProjAnimV2 as Rs3MapProjAnimV2
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.ObjAdd as Rs3ObjAdd
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.ObjDel as Rs3ObjDel
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.SoundAreaV1 as Rs3SoundAreaV1
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.SoundAreaV2 as Rs3SoundAreaV2
 import net.rsprox.proxy.cli.ConfigLoader.loadOsrs
 import net.rsprox.proxy.cli.ConfigLoader.loadReal
 import net.rsprox.proxy.cli.ConfigLoader.loadRealMap
+import net.rsprox.proxy.cli.ConfigLoader.loadRs3
+import net.rsprox.proxy.cli.ConfigLoader.loadRs3Map
 import net.rsprox.transcriber.state.Inventory
 import net.rsprox.transcriber.state.Player
 import net.rsprox.transcriber.state.SessionState
@@ -172,9 +231,7 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             indent(indent)
             append("item(\"")
             append(itemId(item))
-            append("\", ")
-            append(zoom)
-            append(", \"")
+            append("\", \"")
             append(text.replace("<br>", " "))
             append("\") // ")
             append(item)
@@ -433,7 +490,7 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                             when (info) {
                                 is SequenceExtendedInfo -> println("${indent}npc.anim(\"${animationId(info.id)}\"${if (info.delay != 0) ", delay = ${info.delay}" else ""}) // ${npc.name} ${npc.id} ${info.id}")
                                 is SpotanimExtendedInfo -> for (spot in info.spotanims.values) {
-                                    println("${indent}npc.gfx(\"${animationId(spot.id)}\"${if (spot.delay != 0) ", delay = ${spot.delay}" else ""}${if (spot.height != 0) ", height = ${spot.height}" else ""}) // ${npc.name} ${npc.id} ${spot.id}")
+                                    println("${indent}npc.gfx(\"${gfxId(spot.id)}\"${if (spot.delay != 0) ", delay = ${spot.delay}" else ""}${if (spot.height != 0) ", height = ${spot.height}" else ""}) // ${npc.name} ${npc.id} ${spot.id}")
                                 }
                                 is FacePathingEntityExtendedInfo -> {
                                     val face = sessionState.getPlayerOrNull(info.index) ?: sessionState.getActiveWorld().getNpcOrNull(info.index)
@@ -447,7 +504,8 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                                                 when (hit.type) {
                                                     else -> hit.type
                                                 }
-                                            }\") // ${npc.name} ${npc.id}")
+                                            }\") // ${npc.name} ${npc.id}"
+                                        )
                                     }
                                 }
 //                                    else -> println("$npc - ${info}")
@@ -458,7 +516,9 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             }
             // camera
             is CamLookAtV2 -> println("${indent}turnCamera(tile = Tile(${packet.x}, ${packet.z}), height = ${packet.height}, speed = ${packet.rate}, acceleration = ${packet.rate2})")
+            is CamLookAtV3 -> println("${indent}turnCamera(tile = Tile(${packet.x}, ${packet.z}), height = ${packet.height}, speed = ${packet.rate}, acceleration = ${packet.rate2})")
             is CamMoveToV2 -> println("${indent}moveCamera(tile = Tile(${packet.x}, ${packet.z}), height = ${packet.height}, speed = ${packet.rate}, acceleration = ${packet.rate2})")
+            is CamMoveToV3 -> println("${indent}moveCamera(tile = Tile(${packet.x}, ${packet.z}), height = ${packet.height}, speed = ${packet.rate}, acceleration = ${packet.rate2})")
             is CamShake -> println("${indent}shakeCamera(type = ${packet.type}, intensity = ${packet.randomAmount}, sine = ${packet.sineAmount}, frequency = ${packet.sineFrequency})")
             is CamReset -> println("${indent}clearCamera()")
             // varp
@@ -598,49 +658,413 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
 //                        println("==== End Dialogue ====")
                     }
                 }
+                println("    close(\"${interfaceId(packet.interfaceId)}\") //${packet.interfaceId}")
             }
             is IfSetHide -> println("interfaces.sendVisibility(${packet.interfaceId}, ${packet.componentId}, ${!packet.hidden})")
-            is ServerTickEnd -> {
-                val current = dialogue
-                // Link dialogues
-                val previous = previous
-                if (previous != null && current != null) {
-                    if (choice == -1 || choice == 0 || choice == null) { // continue
-                        if (previous !is Choice) {
-                            if (previous.next == null) {
-                                previous.next = current
+            is ServerTickEnd -> linkDialogueAndEndTick(tick)
+            // ==== RS3 ====
+            is Rs3OpNpcT -> {
+                val npc = sessionState.getActiveWorld().getNpcOrNull(packet.index)
+                println("itemOnNpcOperate(\"${itemId(packet.selectedObj, rs3 = true)}\", \"${npcId(npc?.id ?: -1, rs3 = true)}\") {}")
+                resetDialogue()
+            }
+            is Rs3OpObjT -> {
+                println("itemOnFloorItemOperate(\"${itemId(packet.selectedObj, rs3 = true)}\", \"${objectId(packet.id, rs3 = true)}\") {} // x = ${packet.x}, y = ${packet.z} id = ${packet.id}")
+                resetDialogue()
+            }
+            is Rs3OpLocT -> {
+                println("itemOnObjectOperate(\"${itemId(packet.selectedObj, rs3 = true)}\", \"${objectId(packet.id, rs3 = true)}\") {} // x = ${packet.x}, y = ${packet.z} id = ${packet.id}")
+                resetDialogue()
+            }
+            is Rs3OpPlayerT -> {
+                println("itemOnPlayerOperate(\"${itemId(packet.selectedObj, rs3 = true)}\") {}")
+                resetDialogue()
+            }
+            is Rs3OpLoc -> {
+                println("objectOperate(\"${packet.op}\", \"${objectId(packet.id, rs3 = true)}\") {} // x = ${packet.x}, y = ${packet.y}, option = ${packet.op} id = ${packet.id}")
+                resetDialogue()
+            }
+            is Rs3OpObj -> {
+                println("floorItemOperate(id = \"${itemId(packet.id, rs3 = true)}\", x = ${packet.x}, y = ${packet.y}, option = ${packet.op}) // ${packet.id}")
+                resetDialogue()
+            }
+            is Rs3OpPlayer -> {
+                val player = sessionState.getPlayerOrNull(packet.index)
+                println("playerOperate(tile = ${if (player != null) coordToTile(player.coord) else "Tile(?, ?)"}, option = ${packet.op})")
+                resetDialogue()
+            }
+            is Rs3OpNpc -> {
+                val npc = sessionState.getActiveWorld().getNpcOrNull(packet.index)
+                println("npcOperate(id = \"${npcId(npc?.id ?: -1, rs3 = true)}\", tile = ${if (npc != null) coordToTile(npc.coord) else "Tile(?, ?)"}, option = ${packet.op}) // ${npc?.id}")
+                resetDialogue()
+            }
+            is Rs3ResumePauseButton -> {
+                val iface = packet.combinedId ushr 16
+                val comp = packet.combinedId and 0xFFFF
+                val component = componentId(iface, comp, rs3 = true)
+                if (component in setOf(
+                        "chat_v2_left:click_continue",
+                        "objbox_v2:click_continue",
+                        "choice_v2:option_1",
+                        "choice_v2:option_2",
+                        "choice_v2:option_3",
+                        "choice_v2:option_4",
+                        "choice_v2:option_5",
+                        "chat_v2_right:click_continue",
+                        "object_choice:button_graphics_2",
+                        "makex2012:make_click",
+                        "confirm_destroy_v2:button_all",
+                    )
+                ) {
+                    choice = packet.sub
+                } else {
+                    println("Continue $component")
+                }
+            }
+            // inventory
+            is Rs3UpdateInvFull -> {
+                println("${indent}inventory(\"${invId(packet.inventoryId)}\").apply {")
+                indent = "        "
+                for ((i, obj) in packet.objs.withIndex()) {
+                    println("${indent}set($i, \"${itemId(obj.id, rs3 = true)}\", ${obj.count}) // ${obj.id}")
+                }
+                indent = "    "
+                println("${indent}}")
+            }
+            is Rs3UpdateInvPartial -> {
+                println("${indent}inventory(\"${invId(packet.inventoryId, rs3 = true)}\").apply {")
+                indent = "        "
+                for (obj in packet.objs) {
+                    println("${indent}set(${obj.slot}, \"${itemId(obj.id, rs3 = true)}\", ${obj.count}) // ${obj.id}")
+                }
+                indent = "    "
+                println("${indent}}")
+            }
+            // player
+            is Rs3MessageGame -> println("${indent}message(\"${packet.message}\", type = ${packet.type}${if (packet.sender != null) ", name = ${packet.sender}" else ""})")
+            is Rs3UpdateStat -> {
+                val oldXp = sessionState.getExperience(packet.skillId)
+                println("${indent}levels.set(${packet.skillId}, ${packet.level})")
+                if (packet.xp - (oldXp ?: 0) != 0) {
+                    println("${indent}exp(${packet.skillId}, ${packet.xp - (oldXp ?: 0)})")
+                }
+                sessionState.setExperience(packet.skillId, packet.xp)
+            }
+            is Rs3PlayerInfo -> handleRs3PlayerInfo(sessionState, packet)
+            is Rs3NpcInfo -> {
+                val world = sessionState.getActiveWorld()
+                for ((index, update) in packet.updates) {
+                    when (update) {
+                        is Rs3NpcUpdateType.Add -> {
+                            if (world.getNpcOrNull(index) == null) {
+                                world.createNpc(index, update.id, null, 0, update.direction, CoordGrid(update.level, update.x, update.z))
                             }
-                        } else {
-                            println("Can't link choice $previous $current")
                         }
-                    } else {
-                        val prevChoice = previous as Choice
-                        val option = prevChoice.options[choice!! - 1]
-                        val existing = optionDialogues[option]
-                        if (existing == null) {
-                            optionDialogues[option] = current
+                        is Rs3NpcUpdateType.Active -> {
+                            val npc = world.getNpcOrNull(index)
+                            world.updateNpc(index, CoordGrid(update.level, update.x, update.z))
+                            if (skipNpcs || update.extendedInfo.isEmpty() || npc == null) continue
+                            for (info in update.extendedInfo) {
+                                when (info) {
+                                    is Rs3AnimationExtendedInfo -> println("${indent}npc.anim(\"${animationId(info.animId, rs3 = true)}\") // ${npc.name} ${npc.id} ${info.animId}")
+                                    else -> {}
+                                }
+                            }
                         }
+                        Rs3NpcUpdateType.Remove -> world.removeNpc(index)
+                        Rs3NpcUpdateType.Idle -> {}
                     }
                 }
-                if (current != null) {
-                    current.actions.addAll(actions)
-                    println("    $current")
-                    this.previous = current
-                    dialogue = null
+            }
+            // camera
+            is Rs3CamLookAt -> println("${indent}turnCamera(tile = Tile(${packet.localX}, ${packet.localZ}), height = ${packet.height}, speed = ${packet.speed}, acceleration = ${packet.accel})")
+            is Rs3CamMoveTo -> println("${indent}moveCamera(tile = Tile(${packet.localX}, ${packet.localZ}), height = ${packet.height}, speed = ${packet.speed}, acceleration = ${packet.accel})")
+            is Rs3CamShake -> println("${indent}shakeCamera(type = ${packet.axis}, intensity = ${packet.randomAmplitude}, sine = ${packet.sineAmplitude}, frequency = ${packet.frequency})")
+            is Rs3CamReset -> println("${indent}clearCamera()")
+            // varp / varbit
+            is Rs3VarpSmall -> println("${indent}set(\"${varpId(packet.id, rs3 = true)}\", ${packet.value}) // https://chisel.weirdgloop.org/varbs/display?varplayer=${packet.id}")
+            is Rs3VarpLarge -> println("${indent}set(\"${varpId(packet.id, rs3 = true)}\", ${packet.value}) // https://chisel.weirdgloop.org/varbs/display?varplayer=${packet.id}")
+            is Rs3VarpLong -> println("${indent}set(\"${varpId(packet.id, rs3 = true)}\", ${packet.value}) // https://chisel.weirdgloop.org/varbs/display?varplayer=${packet.id}")
+            is Rs3Varbit -> println("${indent}set(\"varbit_${packet.id}\", ${packet.value}) // https://chisel.weirdgloop.org/varbs/display?varbit=${packet.id}")
+            is Rs3VarbitSmall -> println("${indent}set(\"varbit_${packet.id}\", ${packet.value}) // https://chisel.weirdgloop.org/varbs/display?varbit=${packet.id}")
+            is Rs3VarbitLarge -> println("${indent}set(\"varbit_${packet.id}\", ${packet.value}) // https://chisel.weirdgloop.org/varbs/display?varbit=${packet.id}")
+            // sound
+            is Rs3MidiJingle -> println("${indent}jingle(\"${jingleId(packet.song)}\") // ${packet.song}")
+            is Rs3MidiSong -> println("${indent}midi(\"${packet.id}\", volume = ${packet.volume})")
+            is Rs3SynthSound -> {
+                val action = "sound(\"${soundId(packet.id, rs3 = true)}\"${if (packet.delay == 0) "" else ", delay = ${packet.delay}"}${if (packet.loops == 1) "" else ", loops = ${packet.loops}"}) // ${packet.id}"
+                println("${indent}$action")
+                actions.add(action)
+            }
+            is Rs3UpdateZonePartialEnclosed -> {
+                val zoneX = packet.zoneX
+                val zoneY = packet.zoneZ
+                val level = packet.level
+                if (packet.packets.isNotEmpty()) {
+                    println("$indent // zone update ($zoneX, $zoneY, $level)")
                 }
-                if (choice != null && current == null) {
-                    dialogue = null
-                    previous?.next = EndDialogue
-                    this.previous = null
+                for (child in packet.packets) {
+                    rs3ZonePackets(child, zoneX, zoneY, level)
+                }
+            }
+            // interfaces / dialogues
+            is Rs3IfSetModel -> println("interfaces.sendModel(\"${rs3Component(packet.componentHash)}\", ${packet.modelId})")
+            is Rs3IfSetObject -> {
+                val (iface, comp) = rs3ComponentIds(packet.componentHash)
+                when (val component = componentId(iface, comp, rs3 = true)) {
+                    "objectbox:item" -> {
+                        (dialogue as? ItemBox)?.item = packet.objId
+                        (dialogue as? ItemBox)?.zoom = packet.count
+                    }
+                    "objectbox_double:model1" -> {
+                        (dialogue as? DoubleItemBox)?.item1 = packet.objId
+                        (dialogue as? DoubleItemBox)?.zoom1 = packet.count
+                    }
+                    "objectbox_double:model2" -> {
+                        (dialogue as? DoubleItemBox)?.item2 = packet.objId
+                        (dialogue as? DoubleItemBox)?.zoom2 = packet.count
+                    }
+                    else -> println("interfaces.sendObject(\"${component}\", \"${itemId(packet.objId, rs3 = true)}\", ${packet.count}) // ${packet.objId}")
+                }
+            }
+            is Rs3IfSetAnim -> {
+                val (iface, comp) = rs3ComponentIds(packet.componentHash)
+                when (val component = componentId(iface, comp, rs3 = true)) {
+                    "chat_v2_left:chathead_1" -> (dialogue as? NpcChat)?.animation = packet.animId
+                    "chat_v2_right:chathead_1" -> (dialogue as? PlayerChat)?.animation = packet.animId
+                    else -> println("interfaces.sendAnim(\"${component}\", \"${animationId(packet.animId, rs3 = true)}\") // ${packet.animId}")
+                }
+            }
+            is Rs3IfSetText -> {
+                val (iface, comp) = rs3ComponentIds(packet.componentHash)
+                when (val component = componentId(iface, comp, rs3 = true)) {
+                    // Npc
+                    "chat_v2_left:title_text" -> (dialogue as? NpcChat)?.name = packet.text
+                    "chat_v2_left:click_continue" -> (dialogue as? NpcChat)?.clickToContinue = packet.text == "Click here to continue"
+                    "chat_v2_left:chat_text" -> (dialogue as? NpcChat)?.text = packet.text
+//                    // Player
+                    "chat_v2_right:title_text" -> (dialogue as? PlayerChat)?.name = packet.text
+                    "chat_v2_right:chat_text" -> (dialogue as? PlayerChat)?.text = packet.text
+                    "chat_v2_right:click_continue" -> (dialogue as? PlayerChat)?.clickToContinue = packet.text == "Click here to continue"
+//                    // Items
+                    "objbox_v2:objbox_text" -> (dialogue as? ItemBox)?.text = packet.text
+//                    "objectbox_double:text" -> (dialogue as? DoubleItemBox)?.text = packet.text
+//                    // Statements
+//                    "messagebox:text" -> (dialogue as? Statement)?.text = packet.text
+//                    "messagebox:continue" -> (dialogue as? Statement)?.clickToContinue = packet.text == "Click here to continue"
+                    else -> println("interfaces.sendText(\"${component}\", \"${packet.text}\")")
+                }
+            }
+            is Rs3IfSetHide -> {
+                val (id, comp) = rs3ComponentIds(packet.componentHash)
+                println("interfaces.sendVisibility(\"${componentId(id, comp, rs3 = true)}\", ${!packet.hidden})")
+            }
+            is Rs3IfOpenSub -> {
+                // Warnings
+//                if (packet.childId == 162 && (packet.childId == 566 || packet.childId == 567)) {
+//                    if (!createRs3Dialogue(packet.childId)) {
+//                        println(packet)
+//                    }
+//                } else {
+                println("open(\"${interfaceId(packet.childId, rs3 = true)}\") // ${packet.childId} in ${rs3Component(packet.componentHash)}")
+//                }
+            }
+            is Rs3IfOpenTop -> println("openTop(\"${interfaceId(packet.interfaceId, rs3 = true)}\") // ${packet.interfaceId}")
+            is Rs3IfCloseSub -> {
+                val (id, comp) = rs3ComponentIds(packet.parentComponentHash)
+                val component = componentId(id, comp)
+                if (component == "chatbox:chatmodal") {
+                    dialogue?.next = EndDialogue
                     root = null
                 }
-                choice = null
-                actions.clear()
-                println("Tick [$tick]")
+                println("close(\"${componentId(id, comp, rs3 = true)}\") // ${id}:$comp")
             }
+            is Rs3IfMoveSub -> {
+                val (id, comp) = rs3ComponentIds(packet.source)
+                val (id2, comp2) = rs3ComponentIds(packet.destination)
+                println("move(\"${componentId(id, comp, rs3 = true)}\", \"${componentId(id2, comp2, rs3 = true)}\")")
+            }
+            is Rs3TickEnd -> linkDialogueAndEndTick(tick)
             else -> {
 //                println(packet)
             }
+        }
+    }
+
+    private fun handleRs3PlayerInfo(sessionState: SessionState, packet: Rs3PlayerInfo) {
+        for ((index, update) in packet.updates) {
+            when (update) {
+                is Rs3PlayerUpdateType.LowResolutionToHighResolution -> {
+                    sessionState.overridePlayer(Player(index, sessionState.getLastKnownPlayerName(index) ?: "unknown", CoordGrid(update.level, update.x, update.z)))
+                    for (info in update.extendedInfo) {
+                        handleRs3ExtendedInfo(info, null)
+                    }
+                }
+                is Rs3PlayerUpdateType.HighResolutionIdle -> {
+                    for (info in update.extendedInfo) {
+                        handleRs3ExtendedInfo(info, null)
+                    }
+                }
+                is Rs3PlayerUpdateType.HighResolutionMovement -> {
+                    if (index == sessionState.localPlayerIndex) {
+                        val player = sessionState.getPlayerOrNull(index)
+                        println("${indent}walkToDelay(Tile(${update.x}, ${update.z}${if (update.level != 0) ", ${update.level}" else ""})) // from ${if (player != null) coordToTile(player.coord) else "Tile(?, ?)"}")
+                        for (info in update.extendedInfo) {
+                            handleRs3ExtendedInfo(info, player)
+                        }
+                    }
+                    sessionState.overridePlayer(
+                        Player(
+                            index,
+                            sessionState.getPlayerOrNull(index)?.name ?: sessionState.getLastKnownPlayerName(index) ?: "unknown",
+                            CoordGrid(update.level, update.x, update.z),
+                        ),
+                    )
+                }
+                else -> {
+                    // LowResolutionMovement, HighResolutionToLowResolution: no extended info to preload
+                }
+            }
+        }
+    }
+
+    private fun handleRs3ExtendedInfo(info: Rs3PlayerExtendedInfo, player: Player?) {
+        when (info) {
+            is Rs3PlayerExtendedInfo.Sequence -> {
+                val id = info.ids.firstOrNull { it != -1 }
+                if (id == null) {
+                    println("${indent}clearAnim()")
+                } else {
+                    println("${indent}anim(\"${animationId(id)}\"${if (info.delay != 0) ", delay = ${info.delay}" else ""}) // $id")
+                }
+            }
+            is Rs3PlayerExtendedInfo.SayV1 -> println("${indent}say(\"${info.text}\")")
+            is Rs3PlayerExtendedInfo.SayV2 -> println("${indent}say(\"${info.text}\")")
+            is Rs3PlayerExtendedInfo.FaceAngle -> println("${indent}face(${info.angle}) // rs3 angle units")
+            is Rs3PlayerExtendedInfo.FaceEntity -> {
+                if (info.target == 0xFFFF || info.target == -1) {
+                    println("${indent}clearWatch()")
+                } else {
+                    println("${indent}watch(${info.target})")
+                }
+            }
+            is Rs3PlayerExtendedInfo.ExactMove -> {
+                val coord = player?.coord ?: return
+                println(
+                    "${indent}exactMoveDelay(Tile(${coord.x - info.deltaX1}, ${coord.z - info.deltaZ1}${if (coord.level == 0) "" else ", ${coord.level}"})${if (info.delay1 == 0) "" else ", startDelay = ${info.delay1}"}, delay = ${info.delay2}) // startDelta = Delta(${info.deltaX1}, ${info.deltaZ1}), endDelta = Delta(${info.deltaX2}, ${info.deltaZ2})",
+                )
+            }
+            is Rs3PlayerExtendedInfo.Hits -> for (hit in info.hits) {
+                println(
+                    buildString {
+                        append(indent)
+                        append("hit(type = ${hit.type}, value = ${hit.value}")
+                        if (hit.secondaryValue != -1) {
+                            append(", soakType = ${hit.secondaryType}, soakValue = ${hit.secondaryValue}")
+                        }
+                        if (hit.delay != -1) {
+                            append(", delay = ${hit.delay}")
+                        }
+                        append(")")
+                    },
+                )
+            }
+            is Rs3PlayerExtendedInfo.Spotanims -> for (spot in info.additions) {
+                println("${indent}gfx(id = \"${animationId(spot.id)}\") // slot ${spot.slot} id ${spot.id}")
+            }
+            is Rs3PlayerExtendedInfo.Appearance -> println("${indent}flagAppearance() // ${info.name}")
+            else -> {}
+        }
+    }
+
+    private fun rs3Component(hash: Long): String {
+        val packed = hash.toInt()
+        return componentId(packed ushr 16, packed and 0xFFFF)
+    }
+
+    private fun rs3ComponentIds(hash: Long): Pair<Int, Int> {
+        val packed = hash.toInt()
+        return (packed ushr 16) to (packed and 0xFFFF)
+    }
+
+    /** RS3 counterpart of [createDialogue], driven by [Rs3DialogueConfig] instead of hardcoded ids. */
+    private fun createRs3Dialogue(interfaceId: Int): Boolean {
+        dialogue = when (interfaceId) {
+            1184 -> NpcChat() // chat_v2_left
+            1191 -> PlayerChat() // chat_v2_right
+            1188 -> Choice() // choice_v2
+            11 -> DoubleItemBox() // objectbox_double
+            193 -> ItemBox() // objectbox
+            229 -> Statement() //messagebox
+            270 -> MakeAmount() //skillmulti
+            else -> return false
+        }
+        if (root == null) {
+            dialogues.add(dialogue!!)
+            root = dialogue
+        }
+        return true
+    }
+
+    /** Shared by OSRS's ServerTickEnd and RS3's TickEnd: links the just-finished dialogue into the tree and advances the tick print. */
+    private fun linkDialogueAndEndTick(tick: Int) {
+        val current = dialogue
+        // Link dialogues
+        val previous = previous
+        if (previous != null && current != null) {
+            if (choice == -1 || choice == 0 || choice == null) { // continue
+                if (previous !is Choice) {
+                    if (previous.next == null) {
+                        previous.next = current
+                    }
+                } else {
+                    println("Can't link choice $previous $current")
+                }
+            } else {
+                val prevChoice = previous as Choice
+                val option = prevChoice.options[choice!! - 1]
+                val existing = optionDialogues[option]
+                if (existing == null) {
+                    optionDialogues[option] = current
+                }
+            }
+        }
+        if (current != null) {
+            current.actions.addAll(actions)
+            println("    $current")
+            this.previous = current
+            dialogue = null
+        }
+        if (choice != null && current == null) {
+            dialogue = null
+            previous?.next = EndDialogue
+            this.previous = null
+            root = null
+        }
+        choice = null
+        actions.clear()
+        println("Tick [$tick]")
+    }
+
+    private fun rs3ZonePackets(packet: IncomingServerGameMessage, zoneX: Int, zoneY: Int, level: Int) {
+        when (packet) {
+            is Rs3LocAddChange -> println("${indent}objects.add(\"${objectId(packet.locId, rs3 = true)}\", tile = Tile(${packet.xInZone}, ${packet.zInZone}) shape = ${packet.shape}, rotation = ${packet.rotation}) // ${packet.locId}")
+            is Rs3LocAnim -> println("${indent}obj.anim(\"${animationId(packet.id, rs3 = true)}\") // Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation}, id = ${packet.id}")
+            is Rs3LocDel -> println("${indent}obj.remove(Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}), shape = ${packet.shape}, rotation = ${packet.rotation})")
+            is Rs3MapAnim -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).animate(\"${animationId(packet.id, rs3 = true)}\", height = ${packet.height}, delay = ${packet.delay}) // ${packet.id}")
+            is Rs3MapAnimV1 -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).animate(\"${animationId(packet.id, rs3 = true)}\", height = ${packet.height}, delay = ${packet.delay}) // ${packet.id}")
+            is Rs3MapAnimV2 -> println("${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).animate(\"${animationId(packet.id, rs3 = true)}\", height = ${packet.height}, delay = ${packet.delay}) // ${packet.id}")
+            is Rs3MapProjAnim -> println(
+                "${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).shoot(${gfxId(packet.id, rs3 = true)}, curve = ${packet.angle}, sizeOffset = ${packet.progress}, startTime = ${packet.startTime}, endTime = ${packet.endTime}, startHeight = ${packet.startHeight}, endHeight = ${packet.endHeight}, targetIndex = ${packet.target}) // ${packet.id}",
+            )
+            is Rs3MapProjAnimV2 -> println(
+                "${indent}Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}).shoot(${gfxId(packet.id, rs3 = true)}, curve = ${packet.angle}, sizeOffset = ${packet.progress}, startTime = ${packet.startTime}, endTime = ${packet.endTime}, startHeight = ${packet.startHeight}, endHeight = ${packet.endHeight}, targetIndex = ${packet.target}) // ${packet.id}",
+            )
+            is Rs3ObjAdd -> println("${indent}items.spawn(\"${itemId(packet.objId, rs3 = true)}\", ${packet.count}, Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}))")
+            is Rs3ObjDel -> println("${indent}items.remove(\"${itemId(packet.objId, rs3 = true)}\", tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone}))")
+            is Rs3SoundAreaV1 -> println("${indent}areaSound(\"${soundId(packet.id, rs3 = true)}\", delay = ${packet.delay}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone})${if (packet.loops == 1) "" else ", loops = ${packet.loops}"}, radius = ${packet.range}) // ${packet.id}")
+            is Rs3SoundAreaV2 -> println("${indent}areaSound(\"${soundId(packet.id, rs3 = true)}\", delay = ${packet.delay}, tile = Tile(${zoneX + packet.xInZone}, ${zoneY + packet.zInZone})${if (packet.loops == 1) "" else ", loops = ${packet.loops}"}, radius = ${packet.range}) // ${packet.id}")
+            else -> {}
         }
     }
 
@@ -847,30 +1271,48 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
         private var dialogues = mutableSetOf<Dialogue>()
         private var optionDialogues = mutableMapOf<String, Dialogue>()
         private var optionVisited = mutableSetOf<String>()
-        private val animations = loadReal("seqtypes")
-        private val items = loadReal("objtypes")
-        private val objects = loadReal("loctypes")
-        private val graphics = loadReal("spottypes")
-        private val npcs = loadReal("npctypes")
+        private val animations = loadReal("seqtypes", "leak-2025-04")
+        private val items = loadReal("objtypes", "leak-2025-04")
+        private val objects = loadReal("loctypes", "leak-2025-04")
+        private val graphics = loadReal("spottypes", "leak-2025-04")
+        private val npcs = loadReal("npctypes", "leak-2025-04")
         private val scripts = loadOsrs("clientscript")
         private val sounds = loadOsrs("sound")
-        private val varps = loadReal("varptypes")
-        private val inventories = loadReal("invtypes")
+        private val varps = loadReal("varptypes", "leak-2025-04")
+        private val inventories = loadReal("invtypes", "leak-2025-04")
+        private val interfaces = loadRealMap("iftypes", "leak-2025-04")
         private val jingles = loadOsrs("jingle")
-        private val interfaces = loadRealMap("iftypes")
 
-        fun scriptId(id: Int): String = scripts.getOrDefault(id, id.toString())
-        fun npcId(id: Int): String = npcs.getOrDefault(id, id.toString())
-        fun objectId(id: Int): String = objects.getOrDefault(id, id.toString())
-        fun animationId(id: Int): String = animations.getOrDefault(id, id.toString())
-        fun gfxId(id: Int): String = graphics.getOrDefault(id, id.toString())
-        fun itemId(id: Int): String = items.getOrDefault(id, id.toString())
-        fun soundId(id: Int): String = sounds.getOrDefault(id, id.toString())
-        fun varpId(id: Int): String = varps.getOrDefault(id, id.toString())
-        fun invId(id: Int): String = inventories.getOrDefault(id, id.toString())
+        private val rs3Animations = loadRs3("seq")
+        private val rs3Items = loadRs3("obj")
+        private val rs3Objects = loadRs3("loc")
+        private val rs3Npcs = loadRs3("npc")
+        private val rs3Sounds = loadRs3("sound")
+        private val rs3Varps = loadRs3("var_player")
+        private val rs3Inventories = loadRs3("inv")
+        private val rs3Components = loadRs3Map("component")
+        private val rs3Interfaces = loadRs3("interface")
+        private val rs3Graphics = loadRs3("graphic")
+
+        fun scriptId(id: Int, rs3: Boolean = false): String = scripts.getOrDefault(id, id.toString())
+        fun npcId(id: Int, rs3: Boolean = false): String = (if (rs3) rs3Npcs else npcs).getOrDefault(id, id.toString())
+        fun objectId(id: Int, rs3: Boolean = false): String = (if (rs3) rs3Objects else objects).getOrDefault(id, id.toString())
+        fun animationId(id: Int, rs3: Boolean = false): String = (if (rs3) rs3Animations else animations).getOrDefault(id, id.toString())
+        fun gfxId(id: Int, rs3: Boolean = false): String = (if (rs3) rs3Graphics else graphics).getOrDefault(id, id.toString())
+        fun itemId(id: Int, rs3: Boolean = false): String = (if (rs3) rs3Items else items).getOrDefault(id, id.toString())
+        fun soundId(id: Int, rs3: Boolean = false): String = (if (rs3) rs3Sounds else sounds).getOrDefault(id, id.toString())
+        fun varpId(id: Int, rs3: Boolean = false): String = (if (rs3) rs3Varps else varps).getOrDefault(id, id.toString())
+        fun invId(id: Int, rs3: Boolean = false): String = (if (rs3) rs3Inventories else inventories).getOrDefault(id, id.toString())
         fun jingleId(id: Int): String = jingles.getOrDefault(id, id.toString())
-        fun componentId(id: Int, component: Int): String = interfaces.getOrDefault("$id:${component}", "$id:${component}")
-        fun interfaceId(id: Int): String {
+        fun componentId(id: Int, component: Int, rs3: Boolean = false): String {
+            val interfaces = if (rs3) rs3Components else interfaces
+            return interfaces.getOrDefault("$id:${component}", "$id:${component}")
+        }
+
+        fun interfaceId(id: Int, rs3: Boolean = false): String {
+            if (rs3) {
+                return rs3Interfaces.getOrDefault(id, id.toString())
+            }
             val key = interfaces.keys.firstOrNull { it.startsWith("$id:") } ?: return id.toString()
             return interfaces[key]?.substringBefore(':') ?: id.toString()
         }
@@ -903,7 +1345,7 @@ public fun main() {
     BinaryToCodeCommand().main(
         arrayOf(
             "-name",
-            "20260506T183315-0ddf543"
+            "20260920T121631-0ddf543"
 //        "prince-ali-rescue-full-20250514T133541-0ddf543"
 //        "price-ali-rescue-speed-20250514T133541-0ddf543"
         )

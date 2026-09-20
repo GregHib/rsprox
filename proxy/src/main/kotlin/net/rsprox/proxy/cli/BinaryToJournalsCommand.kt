@@ -13,7 +13,7 @@ import java.io.File
 @Suppress("DuplicatedCode")
 public class BinaryToJournalsCommand : Transcriber(name = "journals") {
     private val name by option("-name")
-    private val interfaces = loadRealMap("iftypes")
+    private val interfaces = loadRealMap("iftypes", "leak-2025-04")
 
     private fun componentId(id: Int, component: Int): String = interfaces.getOrDefault("$id:${component}", "$id:${component}")
 
@@ -64,7 +64,7 @@ public class BinaryToJournalsCommand : Transcriber(name = "journals") {
                                 .replace("<col=000080>", "<navy>")
                                 .replace("<col=800000>", "<maroon>")
                     } else {
-                        println("${packet.interfaceId}:${packet.componentId} ${componentId(packet.interfaceId, packet.componentId)} = ${packet.text}")
+                        println("${packet.interfaceId}:${packet.componentId} ${componentId(packet.interfaceId, packet.componentId)} = \"${packet.text}\"")
                     }
                 }
             }
@@ -76,5 +76,5 @@ public class BinaryToJournalsCommand : Transcriber(name = "journals") {
 }
 
 public fun main() {
-    BinaryToJournalsCommand().main(arrayOf("-name", "20260403T123516-0ddf543"))
+    BinaryToJournalsCommand().main(arrayOf("-name", "20260823T160856-0ddf543"))
 }
