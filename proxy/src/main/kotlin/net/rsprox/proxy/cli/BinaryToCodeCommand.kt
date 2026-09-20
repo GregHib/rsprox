@@ -234,19 +234,23 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
     private data class ItemBox(override var text: String = "", var item: Int = -1, var zoom: Int = -1, var sprite: Int = -1) : Dialogue() {
         override fun print(indent: Int) = buildString {
             indent(indent)
-            append("item(\"")
+            append("item(")
             if (item != -1) {
                 append("\"")
                 append(itemId(item))
+                append("\", \"")
+            } else {
                 append("\"")
             }
-            append(", \"")
             append(text.replace("<br>", " "))
+            append("\"")
             if (sprite != -1) {
                 append(", sprite = $sprite")
             }
-            append("\") // ")
-            append(item)
+            append(") // ")
+            if (item != -1) {
+                append(item)
+            }
         }
     }
 
@@ -862,7 +866,7 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
             is Rs3IfSetGraphic -> {
                 val (iface, comp) = rs3ComponentIds(packet.componentHash)
                 when (val component = componentId(iface, comp, rs3 = true)) {
-                    "objbox_v2:graphic_box" -> {(dialogue as? ItemBox)?.sprite = packet.graphicId }
+                    "objbox_v2:graphic_box" -> { pendingRs3Sprite[component] = packet.graphicId }
                     else -> println("interfaces.sendSprite(\"${component.substringBefore(":")}\", \"${component.substringAfter(":")}\", ${packet.graphicId}")
                 }
             }
@@ -1045,6 +1049,7 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
     private val pendingRs3Text = mutableMapOf<String, String>()
     private val pendingRs3Anim = mutableMapOf<String, Int>()
     private val pendingRs3Cont = mutableMapOf<String, Boolean>()
+    private val pendingRs3Sprite = mutableMapOf<String, Int>()
 
     /**
      * RS3 sends [Rs3IfSetText]/[Rs3IfSetAnim] (and other component setters) for a
@@ -1066,7 +1071,10 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 pendingRs3Cont["chat_v2_right:click_continue_button"]?.let { d.clickToContinue = it }
                 pendingRs3Anim["chat_v2_right:chathead_1"]?.let { d.animation = it }
             }
-            is ItemBox -> pendingRs3Text["objbox_v2:objbox_text"]?.let { d.text = it }
+            is ItemBox -> {
+                pendingRs3Text["objbox_v2:objbox_text"]?.let { d.text = it }
+                pendingRs3Sprite["objbox_v2:graphic_box"]?.let { d.sprite = it }
+            }
             is Statement -> {
                 pendingRs3Text["mesbox_v2:mesbox_text"]?.let { d.text = it }
                 pendingRs3Cont["mesbox_v2:click_continue"]?.let { d.clickToContinue = it }
@@ -1402,8 +1410,6 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 9761, 9762, 9763, 9764, 37911 -> "Sad"
                 9785, 9786, 9787, 9788 -> "Angry"
                 9781, 9782, 9783, 9784 -> "Frustrated"
-                585 -> "TreeHappy"
-                584 -> "TreeTalk"
                 // osrs
                 554, 555, 556, 557 -> "Quiz"
                 562, 563, 564, 565 -> "Bored"
