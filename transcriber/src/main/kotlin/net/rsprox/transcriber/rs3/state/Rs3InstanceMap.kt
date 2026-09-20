@@ -47,6 +47,20 @@ internal class Rs3InstanceMap(
         return CoordGrid(point.level, point.x / 2, point.z / 2)
     }
 
+    /** The rotation (0-3) of the static room template covering this destination tile, when known. */
+    fun rotation(coord: CoordGrid): Int? {
+        if (coord == CoordGrid.INVALID || coord.level !in 0..3) return null
+        if ((coord.x shr 6) !in bounds.minX..bounds.maxX || (coord.z shr 6) !in bounds.minZ..bounds.maxZ) {
+            return null
+        }
+        val row = (coord.x shr 3) - (bounds.minX shl 3)
+        val column = (coord.z shr 3) - (bounds.minZ shl 3)
+        if (row !in 0 until rows || column !in 0 until columns) return null
+        val template = cells[(coord.level * rows + row) * columns + column]
+        if (template == -1) return null
+        return template ushr 1 and 3
+    }
+
     /** Coordinates are absolute fine units, with the caller supplying units per tile. */
     fun point(
         level: Int,
