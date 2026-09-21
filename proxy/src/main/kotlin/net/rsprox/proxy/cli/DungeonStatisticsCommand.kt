@@ -27,6 +27,7 @@ import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.extendedinfo.Npc
 import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.extendedinfo.NpcMask as Rs3NpcMask
 import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.PlayerInfo as Rs3PlayerInfo
 import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.PlayerUpdateType as Rs3PlayerUpdateType
+import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.extendedinfo.PlayerExtendedInfo as Rs3PlayerExtendedInfo
 import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.util.PlayerInfoInitBlock as Rs3PlayerInfoInitBlock
 import net.rsprox.protocol.rs3.game.outgoing.model.map.RebuildNormal as Rs3RebuildNormal
 import net.rsprox.protocol.rs3.game.outgoing.model.map.RebuildRegion as Rs3RebuildRegion
@@ -43,6 +44,8 @@ import net.rsprox.protocol.rs3.game.outgoing.model.zone.header.UpdateZoneFullFol
 import net.rsprox.protocol.rs3.game.outgoing.model.zone.header.UpdateZonePartialEnclosed as Rs3UpdateZonePartialEnclosed
 import net.rsprox.protocol.rs3.game.outgoing.model.zone.header.UpdateZonePartialFollows as Rs3UpdateZonePartialFollows
 import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.LocAddChange as Rs3LocAddChange
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.LocAnim as Rs3LocAnim
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapAnim as Rs3MapAnim
 import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.ObjAdd as Rs3ObjAdd
 import java.io.File
 import java.nio.file.Files
@@ -96,7 +99,37 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
     /** Inventory item clicks seen recently enough that a matching ObjAdd is probably their result. */
     private val pendingPlayerActions: MutableList<PendingPlayerAction> = mutableListOf()
 
-    private var pendingRoomLayout: Set<String>? = null
+    /** The most recent door/obstruction OpLoc, recently enough that a player anim/gfx is its response. */
+    private var pendingDoorInteraction: PendingDoorInteraction? = null
+
+    /**
+     * Source-template-tile to actual-instance-tile pairs from the RebuildRegion map-load packet,
+     * non-null only when the last such packet was a real dungeon load (see [handleRoomLayout]).
+     */
+    private var pendingRoomOrigins: List<Pair<CoordGrid, CoordGrid>>? = null
+
+    /**
+     * Doors seen spawning before the current floor's "- Welcome to Daemonheim -" line arrives -
+     * the initial region load fires well before that line, so a door in (or near) the starting
+     * room is otherwise silently dropped by the `current == null` guard in [recordResourceState].
+     * Applied to the next floor once it starts (see handleMessage), same as [pendingRoomOrigins].
+     */
+    private val pendingDoors: MutableList<PendingDoor> = mutableListOf()
+
+    /** Same early-arrival problem as [pendingDoors], but for locked-door barrier key numbers. */
+    private val pendingBarrierKeyNumbers: MutableSet<Int> = mutableSetOf()
+
+    /** Same early-arrival problem as [pendingDoors], but for skill-gated obstructions. */
+    private val pendingObstructions: MutableList<PendingObstruction> = mutableListOf()
+
+    /**
+     * The most recent room-space coordinate the local player was placed at before the current
+     * floor's "- Welcome to Daemonheim -" line arrived. The player's *own* position at the moment
+     * that line is read is unreliable for the same reason [pendingDoors] is needed: it can still be
+     * wherever the previous RebuildNormal (e.g. the dungeoneering lobby, which isn't part of any
+     * instance's coordinate mapping) left them, since the real room load can race the chat line.
+     */
+    private var pendingStartCoord: CoordGrid? = null
 
     /** True while decoding the standalone payload packets that follow a full-zone-snapshot header. */
     private var zoneIsFullSnapshot: Boolean = false
@@ -141,7 +174,12 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         npcIndexHistory.clear()
         recentNpcDeaths.clear()
         pendingPlayerActions.clear()
-        pendingRoomLayout = null
+        pendingRoomOrigins = null
+        pendingDoors.clear()
+        pendingBarrierKeyNumbers.clear()
+        pendingObstructions.clear()
+        pendingDoorInteraction = null
+        pendingStartCoord = null
         zoneIsFullSnapshot = false
         val sessionState = SessionState(binary.header.revision, DefaultSettingSetStore(binaryPath))
         sessionState.createWorld(-1)
@@ -187,7 +225,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             is Rs3RebuildNormal -> {
                 world.rebuild(packet)
                 initLocalPlayer(sessionState, packet.playerInfoInit)
-                pendingRoomLayout = null
+                pendingRoomOrigins = null
             }
             is Rs3RebuildRegion -> {
                 world.rebuild(packet)
@@ -220,6 +258,16 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                     rotation = world.instanceRotation(raw),
                 )
             }
+            is Rs3LocAnim -> {
+                if (packet.id != -1) {
+                    val raw = world.relativizeZoneCoord(packet.xInZone, packet.zInZone)
+                    current?.recordDoorObjectAnimation(toRoomCoord(raw), animationId(packet.id))
+                }
+            }
+            is Rs3MapAnim -> {
+                val raw = world.relativizeZoneCoord(packet.xInZone, packet.zInZone)
+                current?.recordDoorObjectSpotanim(toRoomCoord(raw), gfxId(packet.id))
+            }
             else -> {}
         }
     }
@@ -231,8 +279,30 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             current = DungeonFloorStats(currentFile).also {
                 it.startTick = tick
                 it.tokensAtStart = lastKnownTokens
-                pendingRoomLayout?.let { layout -> it.roomLayout.addAll(layout) }
+                // pendingRoomOrigins survives only when the last map event before this line was the
+                // real dungeon RebuildRegion (RebuildNormal, e.g. leaving the Daemonheim lobby,
+                // resets it to null); only then is pendingStartCoord an actual in-instance position
+                // rather than the player's last real-world tile, which can't translate to one.
+                pendingRoomOrigins?.let { origins ->
+                    for ((source, destination) in origins) it.recordRoomOrigin(source, destination)
+                    pendingStartCoord?.let { coord -> it.visitRoom(coord, tick) }
+                }
+                for (door in pendingDoors) {
+                    it.noteRotation(door.coord, door.rotation)
+                    it.recordDoor(door.coord, door.id, door.kind, door.keyNumber)
+                }
+                it.lockedDoorBarriers.addAll(pendingBarrierKeyNumbers)
+                for (obstruction in pendingObstructions) {
+                    it.noteRotation(obstruction.coord, obstruction.rotation)
+                    it.recordObstruction(obstruction.coord, obstruction.id, obstruction.skill, obstruction.cleared)
+                }
             }
+            pendingRoomOrigins = null
+            pendingDoors.clear()
+            pendingBarrierKeyNumbers.clear()
+            pendingObstructions.clear()
+            pendingDoorInteraction = null
+            pendingStartCoord = null
             introLines = mutableListOf()
             return
         }
@@ -289,6 +359,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         if (id == MIDI_DUNGEON_COMPLETE) {
             floor.completed = true
             floor.endTick = tick
+            floor.bossRoomTile = floor.visitRoom(localPlayerCoord(), tick)
         }
     }
 
@@ -322,32 +393,41 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
 
     /**
      * The instance grid from the RebuildRegion map-load packet: each non-empty cell says which
-     * real, static Daemonheim room template (level/zoneX/zoneZ + rotation) was copied into that
-     * slot of this dungeon's private scene. This is independent of coordinate translation below.
+     * real, static Daemonheim room template (level/zoneX/zoneZ + rotation) was copied into which
+     * slot of this dungeon's private scene. Ground-floor rooms only (see the destLevel filter
+     * below) - a dungeon floor's own upper story, e.g. behind a staircase, is out of scope here.
      *
      * A dungeon room is 16x16 tiles, i.e. a 2x2 block of zones (a zone is 8x8 tiles), so only the
      * template of the top-left zone of each such block is sampled: the other three zones of the
      * same room have their own, distinct source zone coordinates and would otherwise register as
-     * three extra, spurious "rooms".
+     * three extra, spurious "rooms". [Rs3World]'s own row/column-to-tile math (see its instanceCoord)
+     * is mirrored here to turn the destination row/column back into an actual instance tile.
      */
     private fun handleRoomLayout(message: Rs3RebuildRegion) {
-        val layout = linkedSetOf<String>()
-        for (plane in message.templates) {
-            for ((x, row) in plane.withIndex()) {
-                if (x % 2 != 0) continue
-                for ((z, template) in row.withIndex()) {
-                    if (z % 2 != 0) continue
+        val originZoneX = (message.regionOriginX shr 3) shl 3
+        val originZoneZ = (message.regionOriginZ shr 3) shl 3
+        val origins = mutableListOf<Pair<CoordGrid, CoordGrid>>()
+        for ((destLevel, plane) in message.templates.withIndex()) {
+            if (destLevel != 0) continue
+            for ((row, cells) in plane.withIndex()) {
+                if (row % 2 != 0) continue
+                for ((column, template) in cells.withIndex()) {
+                    if (column % 2 != 0) continue
                     if (template == -1) continue
                     val sourceZoneX = (template ushr 14) and 0x3ff
                     val sourceZoneZ = (template ushr 3) and 0x7ff
-                    val rotation = (template ushr 1) and 3
                     val sourceLevel = (template ushr 24) and 3
-                    layout.add("$sourceLevel:$sourceZoneX:$sourceZoneZ:r$rotation")
+                    val source = CoordGrid(sourceLevel, sourceZoneX * 8, sourceZoneZ * 8)
+                    val destination = CoordGrid(destLevel, (originZoneX + row) * 8, (originZoneZ + column) * 8)
+                    origins.add(source to destination)
                 }
             }
         }
-        pendingRoomLayout = layout
-        current?.roomLayout?.addAll(layout)
+        pendingRoomOrigins = origins
+        val floor = current
+        if (floor != null) {
+            for ((source, destination) in origins) floor.recordRoomOrigin(source, destination)
+        }
     }
 
     /** Translates a coordinate in this dungeon's private instance plane into the coordinate of the static room template it was copied from, when known. */
@@ -444,14 +524,27 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         }
     }
 
+    /**
+     * A click on a resource node counts an attempt as before; a click on anything already recorded
+     * as a door (see [recordResourceState]) - a guardian/locked door or a skill obstruction alike -
+     * counts an open attempt and arms [pendingDoorInteraction], so that whatever animation/gfx the
+     * local player plays in response (see [handlePlayerInfo]) gets attributed to that same door.
+     */
     private fun handleOpLoc(sessionState: SessionState, packet: Rs3OpLoc) {
         val floor = current ?: return
         val name = objectId(packet.id)
-        if (resourceSkill(name) == null) return
         val level = sessionState.getPlayerOrNull(sessionState.localPlayerIndex)?.coord?.level ?: 0
         val raw = CoordGrid(level, packet.x, packet.y)
         val coord = toRoomCoord(raw)
         if (coord == CoordGrid.INVALID) return
+        val door = floor.doorAt(coord)
+        if (door != null) {
+            floor.noteRotation(coord, world.instanceRotation(raw))
+            door.attempts++
+            pendingDoorInteraction = PendingDoorInteraction(coord, currentTick)
+            return
+        }
+        if (resourceSkill(name) == null) return
         floor.noteRotation(coord, world.instanceRotation(raw))
         val spot = floor.resourceSpot(coord, canonicalResourceId(name))
         spot.attempts++
@@ -461,14 +554,22 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
     private fun initLocalPlayer(sessionState: SessionState, init: Rs3PlayerInfoInitBlock?) {
         if (init == null) return
         sessionState.localPlayerIndex = init.localPlayerIndex
-        sessionState.overridePlayer(
-            Player(init.localPlayerIndex, "", CoordGrid(init.localPlayerLevel, init.localPlayerX, init.localPlayerZ)),
-        )
+        val coord = CoordGrid(init.localPlayerLevel, init.localPlayerX, init.localPlayerZ)
+        sessionState.overridePlayer(Player(init.localPlayerIndex, "", coord))
+        recordVisit(toRoomCoord(coord))
     }
 
     private fun handlePlayerInfo(sessionState: SessionState, packet: Rs3PlayerInfo) {
         val index = sessionState.localPlayerIndex
         val update = packet.updates[index] ?: return
+        val extendedInfo =
+            when (update) {
+                is Rs3PlayerUpdateType.HighResolutionIdle -> update.extendedInfo
+                is Rs3PlayerUpdateType.LowResolutionToHighResolution -> update.extendedInfo
+                is Rs3PlayerUpdateType.HighResolutionMovement -> update.extendedInfo
+                else -> emptyList()
+            }
+        if (extendedInfo.isNotEmpty()) applyPendingDoorInteractionAnims(extendedInfo)
         val coord =
             when (update) {
                 is Rs3PlayerUpdateType.LowResolutionToHighResolution -> CoordGrid(update.level, update.x, update.z)
@@ -476,6 +577,46 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 else -> return
             }
         sessionState.overridePlayer(Player(index, "", coord))
+        recordVisit(toRoomCoord(coord))
+    }
+
+    /**
+     * Whatever animation/gfx the local player plays within [DOOR_INTERACTION_ANIM_WINDOW_TICKS] of
+     * clicking a door/obstruction (see [handleOpLoc]) is attributed to it as the "open" (or "fail")
+     * reaction; this can't itself tell success from failure, so both land in the same counts and are
+     * told apart, if at all, by cross-referencing [DoorSpot.cleared]/[DoorSpot.attempts].
+     */
+    private fun applyPendingDoorInteractionAnims(extendedInfo: List<Rs3PlayerExtendedInfo>) {
+        val floor = current ?: return
+        val interaction = pendingDoorInteraction ?: return
+        if (currentTick - interaction.tick > DOOR_INTERACTION_ANIM_WINDOW_TICKS) {
+            pendingDoorInteraction = null
+            return
+        }
+        for (info in extendedInfo) {
+            when (info) {
+                is Rs3PlayerExtendedInfo.Sequence -> {
+                    val id = info.ids.firstOrNull { it != -1 } ?: continue
+                    floor.recordDoorPlayerAnimation(interaction.coord, animationId(id))
+                }
+                is Rs3PlayerExtendedInfo.Spotanims -> {
+                    for (addition in info.additions) {
+                        floor.recordDoorPlayerSpotanim(interaction.coord, gfxId(addition.id))
+                    }
+                }
+                else -> {}
+            }
+        }
+    }
+
+    /** See [pendingStartCoord] for why this can't just always read the floor off [current]. */
+    private fun recordVisit(roomCoord: CoordGrid) {
+        val floor = current
+        if (floor != null) {
+            floor.visitRoom(roomCoord, currentTick)
+        } else {
+            pendingStartCoord = roomCoord
+        }
     }
 
     /**
@@ -513,16 +654,72 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                         rotation = world.instanceRotation(raw),
                     )
                 }
+                is Rs3LocAnim -> {
+                    if (child.id != -1) {
+                        val raw = world.relativizeZoneCoord(child.xInZone, child.zInZone, packet.level)
+                        current?.recordDoorObjectAnimation(toRoomCoord(raw), animationId(child.id))
+                    }
+                }
+                is Rs3MapAnim -> {
+                    val raw = world.relativizeZoneCoord(child.xInZone, child.zInZone, packet.level)
+                    current?.recordDoorObjectSpotanim(toRoomCoord(raw), gfxId(child.id))
+                }
                 else -> {}
             }
         }
     }
 
-    /** Tracks a resource node's full/depleted state transition at its exact spawn tile. */
+    /**
+     * Tracks a resource node's full/depleted state transition at its exact spawn tile, or records a
+     * door, a locked door's "barrier" (a physical blockage sat in front of it, numbered to match the
+     * key that clears it - see [DoorSpot.hasBarrier]), or a skill-gated obstruction (e.g. a fire that
+     * needs burning down with Firemaking - see [ONECLICK_OBSTRUCTION_REGEX]).
+     *
+     * All three are handled before the `current == null` check: unlike resource nodes (which
+     * reliably arrive as part of a room's full-snapshot load), these can arrive as an "incremental"
+     * LocAddChange the very first time their room is seen - including during the initial region
+     * load for a floor, which fires before the "- Welcome to Daemonheim -" line creates [current].
+     * Anything seen this early is stashed in a pending list and applied once the floor actually
+     * starts, instead of being dropped.
+     */
     private fun recordResourceState(coord: CoordGrid, locId: Int, rotation: Int?) {
-        val floor = current ?: return
         if (coord == CoordGrid.INVALID) return
         val name = objectId(locId)
+        val kind = doorKind(name)
+        if (kind != null) {
+            val floor = current
+            if (floor != null) {
+                floor.noteRotation(coord, rotation)
+                floor.recordDoor(coord, name, kind, lockedDoorKeyNumber(name))
+            } else {
+                pendingDoors.add(PendingDoor(coord, name, kind, lockedDoorKeyNumber(name), rotation))
+            }
+            return
+        }
+        val barrierKeyNumber = lockedDoorBarrierKeyNumber(name)
+        if (barrierKeyNumber != null) {
+            val floor = current
+            if (floor != null) {
+                floor.lockedDoorBarriers.add(barrierKeyNumber)
+            } else {
+                pendingBarrierKeyNumbers.add(barrierKeyNumber)
+            }
+            return
+        }
+        val obstruction = ONECLICK_OBSTRUCTION_REGEX.find(name)
+        if (obstruction != null) {
+            val skill = obstruction.groupValues[1]
+            val cleared = obstruction.groupValues[2] == "unlocked"
+            val floor = current
+            if (floor != null) {
+                floor.noteRotation(coord, rotation)
+                floor.recordObstruction(coord, name, skill, cleared)
+            } else {
+                pendingObstructions.add(PendingObstruction(coord, name, skill, cleared, rotation))
+            }
+            return
+        }
+        val floor = current ?: return
         if (resourceSkill(name) == null) return
         floor.noteRotation(coord, rotation)
         val spot = floor.resourceSpot(coord, canonicalResourceId(name))
@@ -594,6 +791,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         if (start != null && end != null) {
             floor.tokensEarned = end - start
         }
+        floor.markCriticalRooms()
         floorSequence++
         val json = gson.toJson(floor.toOutput())
         val fileName = "${floor.sourceFile}-floor${floor.floor.takeIf { it >= 0 } ?: floorSequence}-$floorSequence.json"
@@ -603,9 +801,21 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         Files.writeString(jsonl, jsonlLine, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
     }
 
+    private class PendingDoor(val coord: CoordGrid, val id: String, val kind: String, val keyNumber: Int?, val rotation: Int?)
+
+    private class PendingObstruction(
+        val coord: CoordGrid,
+        val id: String,
+        val skill: String,
+        val cleared: Boolean,
+        val rotation: Int?,
+    )
+
     private class NpcDeath(val npcId: Int, val coord: CoordGrid, val tick: Int)
 
     private class PendingPlayerAction(val objId: Int, val tick: Int)
+
+    private class PendingDoorInteraction(val coord: CoordGrid, val tick: Int)
 
     private class NpcStatObservation {
         var baseLevel: Int = -1
@@ -636,12 +846,66 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         var count: Int = 0
     }
 
+    /**
+     * A door - or a skill-gated obstruction standing in for one where no separate door loc exists
+     * (see [recordObstruction]) - seen on the room's wall the moment it was first opened.
+     * [kind] is one of "door" (plain, unlocked), "guardian_door" (needs the co-op guardian
+     * mechanism to open), "boss_door" (leads into the boss room), "locked_door" (needs the matching
+     * dungeoneering key, numbered per floor - see [keyNumber] and [DoorOutput.hasBarrier]), or
+     * "skill_obstruction" (needs a specific skill action, e.g. burning down a fire with Firemaking -
+     * see [skill], [attempts] and [cleared]).
+     */
+    private class DoorSpot(
+        val coord: CoordGrid,
+        val direction: String,
+        val id: String,
+        val kind: String,
+        val keyNumber: Int?,
+        val skill: String?,
+        val tile: String,
+    ) {
+        /** How many times this door/obstruction was clicked (an OpLoc landed on its tile). */
+        var attempts: Int = 0
+
+        /** kind == "skill_obstruction" only: whether the matching "..._unlocked_<theme>" was seen. */
+        var cleared: Boolean = false
+
+        /** The door object's own animations (LocAnim on its tile), e.g. swinging open, by count. */
+        val objectSequences: MutableMap<String, Int> = linkedMapOf()
+
+        /** Gfx played at the door's tile (MapAnim), e.g. a magical unlock effect, by count. */
+        val objectSpotanims: MutableMap<String, Int> = linkedMapOf()
+
+        /** The local player's animations while opening/failing to open this door, by count. */
+        val playerSequences: MutableMap<String, Int> = linkedMapOf()
+
+        /** Gfx played on the local player while opening/failing to open this door, by count. */
+        val playerSpotanims: MutableMap<String, Int> = linkedMapOf()
+    }
+
+    /** [tile] is the static template's own ("originating") coordinate - see [actualTile]. */
     private class RoomStats(val tile: String) {
+        /** Where this room actually sits in this floor's private instance, from the map-load packet. */
+        var actualTile: String? = null
+
         /** 0-3: how the static room template was rotated when placed into this instance. */
         var rotation: Int? = null
+
+        /** The tick the local player first entered this room, i.e. when its door was opened. */
+        var firstVisitTick: Int? = null
+
+        /**
+         * Whether this room lies on the critical path (the doors that must be opened to reach the
+         * boss room), or null when that can't be determined - see the comment on
+         * [DungeonFloorStats.markCriticalRooms].
+         */
+        var critical: Boolean? = null
         val resources: MutableMap<String, ResourceSpot> = linkedMapOf()
         val npcs: MutableMap<String, NpcSpot> = linkedMapOf()
         val floorItems: MutableMap<String, FloorItemSpot> = linkedMapOf()
+
+        /** Doors seen spawning when this room was first opened, keyed by tile. */
+        val doors: MutableMap<String, DoorSpot> = linkedMapOf()
     }
 
     private class DungeonFloorStats(val sourceFile: String) {
@@ -662,12 +926,18 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val xpGained: MutableMap<String, Long> = linkedMapOf()
         val completionMessages: MutableList<String> = mutableListOf()
 
-        /** Static room templates ("level:zoneX:zoneZ:rRotation") used to build this instance, from the map-load packet. */
-        val roomLayout: MutableSet<String> = linkedSetOf()
-
         // Coordinates below are all translated back to the static room template's own coordinate
         // space (see toRoomCoord), so rooms are keyed consistently regardless of instance rotation.
         val rooms: MutableMap<String, RoomStats> = linkedMapOf()
+
+        /** The room the party started this floor in; always known and always critical. */
+        var startRoomTile: String? = null
+
+        /** The room the boss was killed in (the local player's room when the completion midi fires). */
+        var bossRoomTile: String? = null
+
+        /** Key numbers of every "rand_locked_door_barrier_<n>" seen this floor - see [DoorSpot.hasBarrier]. */
+        val lockedDoorBarriers: MutableSet<Int> = mutableSetOf()
 
         private fun room(coord: CoordGrid): RoomStats {
             val tile = roomTile(coord.x, coord.z, coord.level)
@@ -678,6 +948,97 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         fun noteRotation(coord: CoordGrid, rotation: Int?) {
             if (rotation == null) return
             room(coord).rotation = rotation
+        }
+
+        /** Records where the room templated at [source] actually sits in this floor's instance. */
+        fun recordRoomOrigin(source: CoordGrid, destination: CoordGrid) {
+            room(source).actualTile = roomTile(destination.x, destination.z, destination.level)
+        }
+
+        /**
+         * Records that the local player entered the room at [coord] - i.e. its door was opened - at
+         * [tick], the first time this is observed for that room, and returns the room's tile key
+         * (or null for an invalid coord).
+         */
+        fun visitRoom(coord: CoordGrid, tick: Int): String? {
+            if (coord == CoordGrid.INVALID) return null
+            val stats = room(coord)
+            if (stats.firstVisitTick == null) {
+                stats.firstVisitTick = tick
+                if (startRoomTile == null) startRoomTile = stats.tile
+            }
+            return stats.tile
+        }
+
+        /**
+         * Every Daemonheim door - whether it leads deeper along the mandatory route to the boss or
+         * into an optional side room - is the exact same generic loc (`rand_dnd_standard_door`), and
+         * the map-load packet only reveals which static room template occupies each grid cell, not
+         * how rooms are actually connected by doors. Neither piece of data this dumper can observe
+         * distinguishes a critical-path door from an optional one, so the true critical path can't be
+         * reconstructed here.
+         *
+         * What *is* certain: the starting room and the room the boss died in are always on the
+         * critical path, and any room whose door was first opened after the boss died can't be
+         * (the floor was already complete). Everything else is left as unknown (null) rather than
+         * guessed at.
+         */
+        fun markCriticalRooms() {
+            val bossTick = bossRoomTile?.let { rooms[it]?.firstVisitTick }
+            for (stats in rooms.values) {
+                stats.critical =
+                    when {
+                        stats.tile == startRoomTile || stats.tile == bossRoomTile -> true
+                        bossTick != null && stats.firstVisitTick != null && stats.firstVisitTick!! > bossTick -> false
+                        else -> null
+                    }
+            }
+        }
+
+        fun recordDoor(coord: CoordGrid, id: String, kind: String, keyNumber: Int?) {
+            val tile = tileKey(coord)
+            room(coord).doors.getOrPut(tile) {
+                DoorSpot(coord, edgeDirection(coord.x, coord.z), id, kind, keyNumber, skill = null, tile)
+            }
+        }
+
+        /**
+         * Records a skill-gated obstruction (e.g. "rand_oneclick_firemaking_locked_frozen") as a
+         * "skill_obstruction" door-like entry, keyed by tile so its later "..._unlocked_<theme>"
+         * counterpart (same tile, same skill) updates the same entry's [DoorSpot.cleared] instead of
+         * creating a duplicate. There's often no separate door loc for the opening this gates - see
+         * [DungeonStatisticsCommand.ONECLICK_OBSTRUCTION_REGEX].
+         */
+        fun recordObstruction(coord: CoordGrid, id: String, skill: String, cleared: Boolean) {
+            val tile = tileKey(coord)
+            val stats =
+                room(coord).doors.getOrPut(tile) {
+                    DoorSpot(coord, edgeDirection(coord.x, coord.z), id, "skill_obstruction", null, skill, tile)
+                }
+            if (cleared) stats.cleared = true
+        }
+
+        /** The door/obstruction already recorded at [coord], without creating a new room entry. */
+        fun doorAt(coord: CoordGrid): DoorSpot? = rooms[roomTile(coord.x, coord.z, coord.level)]?.doors?.get(tileKey(coord))
+
+        /** Attributes a door object's own animation (LocAnim) to the door recorded at [coord], if any. */
+        fun recordDoorObjectAnimation(coord: CoordGrid, id: String) {
+            doorAt(coord)?.let { it.objectSequences[id] = (it.objectSequences[id] ?: 0) + 1 }
+        }
+
+        /** Attributes a gfx played at [coord] (MapAnim) to the door recorded there, if any. */
+        fun recordDoorObjectSpotanim(coord: CoordGrid, id: String) {
+            doorAt(coord)?.let { it.objectSpotanims[id] = (it.objectSpotanims[id] ?: 0) + 1 }
+        }
+
+        /** Attributes the local player's animation, played while [pendingDoorInteraction] is live, to that door. */
+        fun recordDoorPlayerAnimation(coord: CoordGrid, id: String) {
+            doorAt(coord)?.let { it.playerSequences[id] = (it.playerSequences[id] ?: 0) + 1 }
+        }
+
+        /** Attributes the local player's gfx, played while [pendingDoorInteraction] is live, to that door. */
+        fun recordDoorPlayerSpotanim(coord: CoordGrid, id: String) {
+            doorAt(coord)?.let { it.playerSpotanims[id] = (it.playerSpotanims[id] ?: 0) + 1 }
         }
 
         fun resourceSpot(coord: CoordGrid, id: String): ResourceSpot {
@@ -719,17 +1080,39 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 tokensEarned = tokensEarned,
                 xpGained = xpGained,
                 completionMessages = completionMessages,
-                roomLayout = roomLayout.toList(),
+                startRoomTile = startRoomTile,
+                bossRoomTile = bossRoomTile,
                 rooms = rooms.values.map { it.toOutput() },
             )
 
         private fun RoomStats.toOutput(): RoomOutput =
             RoomOutput(
-                tile = tile,
+                originatingTile = tile,
+                actualTile = actualTile,
                 rotation = rotation,
+                firstVisitTick = firstVisitTick,
+                critical = critical,
+                doors = doors.values.map { it.toOutput() },
                 resources = resources.values.map { it.toOutput() },
                 npcs = npcs.values.map { it.toOutput() },
                 floorItems = floorItems.values.map { it.toOutput() },
+            )
+
+        private fun DoorSpot.toOutput(): DoorOutput =
+            DoorOutput(
+                direction = direction,
+                id = id,
+                kind = kind,
+                keyNumber = keyNumber,
+                hasBarrier = keyNumber != null && keyNumber in lockedDoorBarriers,
+                skill = skill,
+                attempts = attempts,
+                cleared = if (kind == "skill_obstruction") cleared else null,
+                objectSequences = objectSequences,
+                objectSpotanims = objectSpotanims,
+                playerSequences = playerSequences,
+                playerSpotanims = playerSpotanims,
+                tile = tile,
             )
 
         private fun ResourceSpot.toOutput(): ResourceOutput =
@@ -767,16 +1150,50 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val tokensEarned: Int?,
         val xpGained: Map<String, Long>,
         val completionMessages: List<String>,
-        val roomLayout: List<String>,
+        val startRoomTile: String?,
+        val bossRoomTile: String?,
         val rooms: List<RoomOutput>,
     )
 
     private class RoomOutput(
-        val tile: String,
+        /** The static room template's own coordinate in the template bank ("level, x, z"). */
+        val originatingTile: String,
+        /** Where this room actually sits in this floor's private instance, when known. */
+        val actualTile: String?,
         val rotation: Int?,
+        val firstVisitTick: Int?,
+        val critical: Boolean?,
+        val doors: List<DoorOutput>,
         val resources: List<ResourceOutput>,
         val npcs: List<NpcOutput>,
         val floorItems: List<FloorItemOutput>,
+    )
+
+    private class DoorOutput(
+        val direction: String,
+        val id: String,
+        val kind: String,
+        val keyNumber: Int?,
+        /** True when this locked door's matching "rand_locked_door_barrier_<n>" was seen this floor. */
+        val hasBarrier: Boolean,
+        /** kind == "skill_obstruction" only: the skill needed to clear it, e.g. "firemaking". */
+        val skill: String?,
+        /** How many times this door/obstruction was clicked (an OpLoc landed on its tile). */
+        val attempts: Int,
+        /** kind == "skill_obstruction" only: whether it was seen to actually clear. */
+        val cleared: Boolean?,
+        /** The door object's own animations (LocAnim), e.g. swinging open, mapped name to count. */
+        val objectSequences: Map<String, Int>,
+        /** Gfx played at the door's tile (MapAnim), mapped name to count. */
+        val objectSpotanims: Map<String, Int>,
+        /**
+         * The local player's animations while opening/failing to open this door, mapped name to
+         * count - can't itself distinguish success from failure, see [DungeonStatisticsCommand.applyPendingDoorInteractionAnims].
+         */
+        val playerSequences: Map<String, Int>,
+        /** Gfx played on the local player while opening/failing to open this door, mapped name to count. */
+        val playerSpotanims: Map<String, Int>,
+        val tile: String,
     )
 
     private class ResourceOutput(
@@ -822,11 +1239,26 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         /** How many ticks after an inventory item click a matching ObjAdd still counts as its result. */
         private const val PLAYER_ACTION_WINDOW_TICKS = 3
 
+        /** How many ticks after clicking a door/obstruction a player anim/gfx still counts as its response. */
+        private const val DOOR_INTERACTION_ANIM_WINDOW_TICKS = 3
+
         private val FLOOR_REGEX = Regex("""Floor\s*(?:<[^>]*>)?(\d+)\s*(?:<[^>]*>)?(\w+) Complexity""")
         private val SIZE_REGEX = Regex("""Dungeon Size:\s*(?:<[^>]*>)?(\w+)""")
         private val PARTY_REGEX = Regex("""Party Size:Difficulty\s*(?:<[^>]*>)?(\d+):(\d+)""")
         private val TAG_REGEX = Regex("""<[^>]*>""")
         private val RESOURCE_SKILL_REGEX = Regex("""rand_([a-z]+)_resource""")
+        private val DOOR_REGEX = Regex("""^rand_(door|guardian_door|boss_door)_(?:frzn|abnd|furn|oclt|wrpd)$""")
+        private val LOCKED_DOOR_REGEX = Regex("""^rand_locked_door_(\d+)_(?:frozen|abandoned|furnished|occult|warped)$""")
+        private val LOCKED_DOOR_BARRIER_REGEX = Regex("""^rand_locked_door_barrier_(\d+)$""")
+
+        /**
+         * A skill-gated obstruction, e.g. "rand_oneclick_firemaking_locked_frozen" (a burnable
+         * blockage needing Firemaking) or "rand_oneclick_crafting_unlocked_abandoned" (the same
+         * blockage after being cleared) - one per skill per Daemonheim decor theme. Group 1 is the
+         * skill name, group 2 is "locked" or "unlocked".
+         */
+        private val ONECLICK_OBSTRUCTION_REGEX =
+            Regex("""^rand_oneclick_([a-z]+)_(locked|unlocked)_(?:frozen|abandoned|furnished|occult|warped)$""")
 
         private val gson = GsonBuilder().setPrettyPrinting().create()
 
@@ -861,11 +1293,65 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         /** The node's mapped name with its depleted-state suffix stripped, so full/empty share one id. */
         fun canonicalResourceId(name: String): String = name.removeSuffix("_empty")
 
+        /**
+         * A standard room door ("rand_door_<theme>"), a co-op "guardian" door
+         * ("rand_guardian_door_<theme>") or the door into the boss room ("rand_boss_door_<theme>"),
+         * one per Daemonheim decor theme (frozen/abandoned/furnished/occult/warped); or a keyed
+         * "rand_locked_door_<n>_<theme>" (see [lockedDoorKeyNumber]). Returns "door"/"guardian_door"/
+         * "boss_door"/"locked_door", or null if [name] isn't a door at all.
+         *
+         * None of these say whether a door is on the mandatory route to the boss - a guardian or
+         * locked door might gate a side room just as easily as the main path - but they *do* say
+         * whether it's just walked through versus needing the guardian mechanism or a specific key.
+         *
+         * In practice a plain "door"/"boss_door" is rarely, if ever, observed this way: verified
+         * against a real recording, only doors with state that can actually change at runtime
+         * (guardian/locked) were ever sent as a LocAddChange across an entire floor - a plain,
+         * never-locked door appears to be baked into the room as static terrain instead, so most
+         * rooms will only show up with doors here when at least one of their connections is gated.
+         */
+        fun doorKind(name: String): String? {
+            if (DOOR_REGEX.matches(name)) return DOOR_REGEX.find(name)!!.groupValues[1]
+            if (LOCKED_DOOR_REGEX.matches(name)) return "locked_door"
+            return null
+        }
+
+        /** The dungeoneering key number a `rand_locked_door_<n>_<theme>` loc needs, or null otherwise. */
+        fun lockedDoorKeyNumber(name: String): Int? = LOCKED_DOOR_REGEX.find(name)?.groupValues?.get(1)?.toIntOrNull()
+
+        /**
+         * The key number of a `rand_locked_door_barrier_<n>` loc - a physical blockage placed in
+         * front of the matching locked door, cleared once that key is used - or null otherwise.
+         */
+        fun lockedDoorBarrierKeyNumber(name: String): Int? =
+            LOCKED_DOOR_BARRIER_REGEX.find(name)?.groupValues?.get(1)?.toIntOrNull()
+
         /** The anchor (top-left) tile of the 16x16-tile room containing (x, z, level). */
         fun roomTile(x: Int, z: Int, level: Int): String {
             val anchorX = (x shr 4) shl 4
             val anchorZ = (z shr 4) shl 4
             return "$anchorX, $anchorZ, $level"
+        }
+
+        /**
+         * Which of the room's four walls (x, z, level) is closest to, using the same room-anchor
+         * convention as [roomTile]. A door sits exactly on the boundary row/column, but a skill
+         * obstruction (see [ONECLICK_OBSTRUCTION_REGEX]) is often a tile or two in front of it, so
+         * this picks the nearest wall rather than requiring an exact edge.
+         */
+        fun edgeDirection(x: Int, z: Int): String {
+            val localX = x - ((x shr 4) shl 4)
+            val localZ = z - ((z shr 4) shl 4)
+            val distanceToNorth = 15 - localZ
+            val distanceToSouth = localZ
+            val distanceToEast = 15 - localX
+            val distanceToWest = localX
+            return when (minOf(distanceToNorth, distanceToSouth, distanceToEast, distanceToWest)) {
+                distanceToNorth -> "north"
+                distanceToSouth -> "south"
+                distanceToEast -> "east"
+                else -> "west"
+            }
         }
 
         fun tileKey(coord: CoordGrid): String = "${coord.x}, ${coord.z}, ${coord.level}"
