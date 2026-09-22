@@ -76,6 +76,9 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
     private var current: DungeonFloorStats? = null
     private var introLines: MutableList<String>? = null
     private var lastKnownTokens: Int? = null
+
+    /** Most recently seen level per skill, cleared per binary file (see transcribeFile). */
+    private val currentLevels: MutableMap<String, Int> = mutableMapOf()
     private var world = Rs3World()
     private var currentTick: Int = 0
     private var activeSessionState: SessionState? = null
@@ -172,6 +175,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         npcIndexToCoord.clear()
         npcIndexToSpot.clear()
         npcIndexHistory.clear()
+        currentLevels.clear()
         recentNpcDeaths.clear()
         pendingPlayerActions.clear()
         pendingRoomOrigins = null
@@ -279,6 +283,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             current = DungeonFloorStats(currentFile).also {
                 it.startTick = tick
                 it.tokensAtStart = lastKnownTokens
+                it.levelsAtStart.putAll(currentLevels)
                 // pendingRoomOrigins survives only when the last map event before this line was the
                 // real dungeon RebuildRegion (RebuildNormal, e.g. leaving the Daemonheim lobby,
                 // resets it to null); only then is pendingStartCoord an actual in-instance position
@@ -324,6 +329,12 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             message.startsWith("You've just advanced a")
         ) {
             floor.completionMessages.add(message)
+        }
+        REWARD_ITEM_REGEX.find(message)?.let { match ->
+            for (item in match.groupValues[1].split(",")) {
+                val name = item.trim().removeSuffix(".").trim()
+                if (name.isNotEmpty()) floor.awardedItems.add(name)
+            }
         }
     }
 
@@ -384,6 +395,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
     private fun handleUpdateStat(sessionState: SessionState, packet: Rs3UpdateStat) {
         val oldXp = sessionState.getExperience(packet.skillId) ?: 0
         sessionState.setExperience(packet.skillId, packet.xp)
+        currentLevels[skillName(packet.skillId)] = packet.level
         val gained = packet.xp - oldXp
         if (gained <= 0) return
         val floor = current ?: return
@@ -923,8 +935,12 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         var tokensAtStart: Int? = null
         var tokensAtEnd: Int? = null
         var tokensEarned: Int? = null
+        val levelsAtStart: MutableMap<String, Int> = linkedMapOf()
         val xpGained: MutableMap<String, Long> = linkedMapOf()
         val completionMessages: MutableList<String> = mutableListOf()
+
+        /** Item names parsed from "You receive: ..." reward chat lines seen this floor. */
+        val awardedItems: MutableList<String> = mutableListOf()
 
         // Coordinates below are all translated back to the static room template's own coordinate
         // space (see toRoomCoord), so rooms are keyed consistently regardless of instance rotation.
@@ -1078,8 +1094,10 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 tokensAtStart = tokensAtStart,
                 tokensAtEnd = tokensAtEnd,
                 tokensEarned = tokensEarned,
+                levelsAtStart = levelsAtStart,
                 xpGained = xpGained,
                 completionMessages = completionMessages,
+                awardedItems = awardedItems,
                 startRoomTile = startRoomTile,
                 bossRoomTile = bossRoomTile,
                 rooms = rooms.values.map { it.toOutput() },
@@ -1148,8 +1166,10 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val tokensAtStart: Int?,
         val tokensAtEnd: Int?,
         val tokensEarned: Int?,
+        val levelsAtStart: Map<String, Int>,
         val xpGained: Map<String, Long>,
         val completionMessages: List<String>,
+        val awardedItems: List<String>,
         val startRoomTile: String?,
         val bossRoomTile: String?,
         val rooms: List<RoomOutput>,
@@ -1246,6 +1266,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         private val SIZE_REGEX = Regex("""Dungeon Size:\s*(?:<[^>]*>)?(\w+)""")
         private val PARTY_REGEX = Regex("""Party Size:Difficulty\s*(?:<[^>]*>)?(\d+):(\d+)""")
         private val TAG_REGEX = Regex("""<[^>]*>""")
+        private val REWARD_ITEM_REGEX = Regex("""^You received item:\s*(.+)$""")
         private val RESOURCE_SKILL_REGEX = Regex("""rand_([a-z]+)_resource""")
         private val DOOR_REGEX = Regex("""^rand_(door|guardian_door|boss_door)_(?:frzn|abnd|furn|oclt|wrpd)$""")
         private val LOCKED_DOOR_REGEX = Regex("""^rand_locked_door_(\d+)_(?:frozen|abandoned|furnished|occult|warped)$""")
