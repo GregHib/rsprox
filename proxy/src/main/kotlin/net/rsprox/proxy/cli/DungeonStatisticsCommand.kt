@@ -74,6 +74,20 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
     private var currentFile: String = ""
     private var floorSequence: Int = 0
     private var current: DungeonFloorStats? = null
+
+    /**
+     * [current], but only while its floor is still in progress. Once [DungeonFloorStats.completed]
+     * is set (see handleMidiSong) the floor keeps [current] alive so trailing reward messages/varps
+     * (tokens, floor time, xp, chat) can still be attributed to it until the next floor's
+     * "- Welcome to Daemonheim -" line finalizes and replaces it - but the player is teleported out
+     * during that same window, and the *next* dungeon's region load, npc spawns, etc. arrive well
+     * before that line. Without this, those packets were wrongly recorded onto the completed floor
+     * (see the various pending* buffers, which is where this data belongs instead) rather than
+     * dropped or deferred like data seen before the very first floor.
+     */
+    private val activeFloor: DungeonFloorStats?
+        get() = current?.takeUnless { it.completed }
+
     private var introLines: MutableList<String>? = null
     private var lastKnownTokens: Int? = null
 
@@ -114,7 +128,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
     /**
      * Doors seen spawning before the current floor's "- Welcome to Daemonheim -" line arrives -
      * the initial region load fires well before that line, so a door in (or near) the starting
-     * room is otherwise silently dropped by the `current == null` guard in [recordResourceState].
+     * room is otherwise silently dropped by the `activeFloor == null` guard in [recordResourceState].
      * Applied to the next floor once it starts (see handleMessage), same as [pendingRoomOrigins].
      */
     private val pendingDoors: MutableList<PendingDoor> = mutableListOf()
@@ -265,12 +279,12 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             is Rs3LocAnim -> {
                 if (packet.id != -1) {
                     val raw = world.relativizeZoneCoord(packet.xInZone, packet.zInZone)
-                    current?.recordDoorObjectAnimation(toRoomCoord(raw), animationId(packet.id))
+                    activeFloor?.recordDoorObjectAnimation(toRoomCoord(raw), animationId(packet.id))
                 }
             }
             is Rs3MapAnim -> {
                 val raw = world.relativizeZoneCoord(packet.xInZone, packet.zInZone)
-                current?.recordDoorObjectSpotanim(toRoomCoord(raw), gfxId(packet.id))
+                activeFloor?.recordDoorObjectSpotanim(toRoomCoord(raw), gfxId(packet.id))
             }
             else -> {}
         }
@@ -436,7 +450,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             }
         }
         pendingRoomOrigins = origins
-        val floor = current
+        val floor = activeFloor
         if (floor != null) {
             for ((source, destination) in origins) floor.recordRoomOrigin(source, destination)
         }
@@ -449,7 +463,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
     }
 
     private fun handleNpcInfo(packet: Rs3NpcInfo) {
-        val floor = current
+        val floor = activeFloor
         for ((index, update) in packet.updates) {
             when (update) {
                 is Rs3NpcUpdateType.Add -> {
@@ -490,9 +504,9 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 Rs3NpcUpdateType.Remove -> {
                     val deathCoord = npcIndexToCoord.remove(index)
                     val deathId = npcIndexToId.remove(index)
-                    npcIndexToSpot.remove(index)
+                    val deathSpot = npcIndexToSpot.remove(index)
                     if (deathId != null && deathCoord != null && deathCoord != CoordGrid.INVALID) {
-                        recentNpcDeaths.add(NpcDeath(deathId, deathCoord, currentTick))
+                        recentNpcDeaths.add(NpcDeath(deathSpot, deathId, deathCoord, currentTick))
                     }
                 }
                 Rs3NpcUpdateType.Idle -> {}
@@ -543,7 +557,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
      * local player plays in response (see [handlePlayerInfo]) gets attributed to that same door.
      */
     private fun handleOpLoc(sessionState: SessionState, packet: Rs3OpLoc) {
-        val floor = current ?: return
+        val floor = activeFloor ?: return
         val name = objectId(packet.id)
         val level = sessionState.getPlayerOrNull(sessionState.localPlayerIndex)?.coord?.level ?: 0
         val raw = CoordGrid(level, packet.x, packet.y)
@@ -599,7 +613,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
      * told apart, if at all, by cross-referencing [DoorSpot.cleared]/[DoorSpot.attempts].
      */
     private fun applyPendingDoorInteractionAnims(extendedInfo: List<Rs3PlayerExtendedInfo>) {
-        val floor = current ?: return
+        val floor = activeFloor ?: return
         val interaction = pendingDoorInteraction ?: return
         if (currentTick - interaction.tick > DOOR_INTERACTION_ANIM_WINDOW_TICKS) {
             pendingDoorInteraction = null
@@ -621,9 +635,9 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         }
     }
 
-    /** See [pendingStartCoord] for why this can't just always read the floor off [current]. */
+    /** See [pendingStartCoord] for why this can't just always read the floor off [activeFloor]. */
     private fun recordVisit(roomCoord: CoordGrid) {
-        val floor = current
+        val floor = activeFloor
         if (floor != null) {
             floor.visitRoom(roomCoord, currentTick)
         } else {
@@ -647,7 +661,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
 
     private fun handleZone(packet: Rs3UpdateZonePartialEnclosed) {
         world.setActiveZone(packet.zoneX, packet.zoneZ, packet.level)
-        if (current == null) return
+        if (activeFloor == null) return
         for (child in packet.packets) {
             when (child) {
                 is Rs3LocAddChange -> {
@@ -669,12 +683,12 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 is Rs3LocAnim -> {
                     if (child.id != -1) {
                         val raw = world.relativizeZoneCoord(child.xInZone, child.zInZone, packet.level)
-                        current?.recordDoorObjectAnimation(toRoomCoord(raw), animationId(child.id))
+                        activeFloor?.recordDoorObjectAnimation(toRoomCoord(raw), animationId(child.id))
                     }
                 }
                 is Rs3MapAnim -> {
                     val raw = world.relativizeZoneCoord(child.xInZone, child.zInZone, packet.level)
-                    current?.recordDoorObjectSpotanim(toRoomCoord(raw), gfxId(child.id))
+                    activeFloor?.recordDoorObjectSpotanim(toRoomCoord(raw), gfxId(child.id))
                 }
                 else -> {}
             }
@@ -687,10 +701,11 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
      * key that clears it - see [DoorSpot.hasBarrier]), or a skill-gated obstruction (e.g. a fire that
      * needs burning down with Firemaking - see [ONECLICK_OBSTRUCTION_REGEX]).
      *
-     * All three are handled before the `current == null` check: unlike resource nodes (which
+     * All three are handled before the `activeFloor == null` check: unlike resource nodes (which
      * reliably arrive as part of a room's full-snapshot load), these can arrive as an "incremental"
      * LocAddChange the very first time their room is seen - including during the initial region
-     * load for a floor, which fires before the "- Welcome to Daemonheim -" line creates [current].
+     * load for a floor, which fires before the "- Welcome to Daemonheim -" line creates [current],
+     * or while [current] is a just-completed floor awaiting finalization (see [activeFloor]).
      * Anything seen this early is stashed in a pending list and applied once the floor actually
      * starts, instead of being dropped.
      */
@@ -699,7 +714,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val name = objectId(locId)
         val kind = doorKind(name)
         if (kind != null) {
-            val floor = current
+            val floor = activeFloor
             if (floor != null) {
                 floor.noteRotation(coord, rotation)
                 floor.recordDoor(coord, name, kind, lockedDoorKeyNumber(name))
@@ -710,7 +725,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         }
         val barrierKeyNumber = lockedDoorBarrierKeyNumber(name)
         if (barrierKeyNumber != null) {
-            val floor = current
+            val floor = activeFloor
             if (floor != null) {
                 floor.lockedDoorBarriers.add(barrierKeyNumber)
             } else {
@@ -722,7 +737,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         if (obstruction != null) {
             val skill = obstruction.groupValues[1]
             val cleared = obstruction.groupValues[2] == "unlocked"
-            val floor = current
+            val floor = activeFloor
             if (floor != null) {
                 floor.noteRotation(coord, rotation)
                 floor.recordObstruction(coord, name, skill, cleared)
@@ -731,7 +746,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             }
             return
         }
-        val floor = current ?: return
+        val floor = activeFloor ?: return
         if (resourceSkill(name) == null) return
         floor.noteRotation(coord, rotation)
         val spot = floor.resourceSpot(coord, canonicalResourceId(name))
@@ -747,8 +762,11 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
      * Records a ground item, tagged as either a room-load "spawn" (delivered as part of a zone's
      * initial full snapshot) or a "drop" (a later, incremental addition). Drops that land on the
      * exact tile an NPC was removed from within [NPC_DEATH_DROP_WINDOW_TICKS] ticks are further
-     * attributed to that NPC; this is a heuristic; not every Remove is a death (an NPC leaving
-     * render distance also removes it), so an occasional drop may be mis-attributed.
+     * attributed to that specific NPC spawn point - nested under its own entry in [NpcSpot.drops]
+     * rather than the room's flat [RoomStats.floorItems] list, so that two separate kills of the
+     * same NPC (e.g. after a respawn) each keep their own drops instead of being collated together;
+     * this is a heuristic, as not every Remove is a death (an NPC leaving render distance also
+     * removes it), so an occasional drop may be mis-attributed.
      *
      * Items the player themselves put on the ground are not statistics about the dungeon and are
      * excluded: an npc-death drop takes priority if one matches, otherwise a recent inventory click
@@ -756,15 +774,20 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
      * and skipped (see [handleIf3Button]).
      */
     private fun recordFloorItem(coord: CoordGrid, objId: Int, count: Int, isSnapshot: Boolean, rotation: Int?) {
-        val floor = current ?: return
+        val floor = activeFloor ?: return
         if (coord == CoordGrid.INVALID) return
         val death = if (isSnapshot) null else findRecentNpcDeath(coord)
         if (death == null && !isSnapshot && consumePendingPlayerAction(objId, coord)) return
         floor.noteRotation(coord, rotation)
         val name = itemId(objId)
+        val deathSpot = death?.spot
+        if (deathSpot != null) {
+            val spot = deathSpot.dropSpot(name, tileKey(coord))
+            spot.count += count
+            return
+        }
         val source = if (isSnapshot) "spawn" else "drop"
-        val droppedBy = death?.let { npcId(it.npcId) }
-        val spot = floor.floorItemSpot(coord, name, source, droppedBy)
+        val spot = floor.floorItemSpot(coord, name, source)
         spot.count += count
     }
 
@@ -823,7 +846,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val rotation: Int?,
     )
 
-    private class NpcDeath(val npcId: Int, val coord: CoordGrid, val tick: Int)
+    private class NpcDeath(val spot: NpcSpot?, val npcId: Int, val coord: CoordGrid, val tick: Int)
 
     private class PendingPlayerAction(val objId: Int, val tick: Int)
 
@@ -851,10 +874,19 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val sequences: MutableMap<String, Int> = linkedMapOf()
         val spotanims: MutableMap<String, Int> = linkedMapOf()
         val stats: MutableMap<Int, NpcStatObservation> = linkedMapOf()
+
+        /**
+         * Items dropped by this exact spawn point's kills, keyed by id/tile so a specific kill's
+         * drops stay grouped under the npc that dropped them rather than a room-wide flat list -
+         * see [DungeonStatisticsCommand.recordFloorItem].
+         */
+        val drops: MutableMap<String, FloorItemSpot> = linkedMapOf()
+
+        fun dropSpot(id: String, tile: String): FloorItemSpot = drops.getOrPut("$id@$tile") { FloorItemSpot(id, tile, "drop") }
     }
 
-    /** One specific ground item stack: a distinct id/tile/source(/source npc) combination. */
-    private class FloorItemSpot(val id: String, val tile: String, val source: String, val droppedBy: String?) {
+    /** One specific ground item stack: a distinct id/tile/source combination. */
+    private class FloorItemSpot(val id: String, val tile: String, val source: String) {
         var count: Int = 0
     }
 
@@ -1069,12 +1101,10 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             return room.npcs.getOrPut("$id@$tile") { NpcSpot(id, sid, tile) }
         }
 
-        fun floorItemSpot(coord: CoordGrid, id: String, source: String, droppedBy: String?): FloorItemSpot {
+        fun floorItemSpot(coord: CoordGrid, id: String, source: String): FloorItemSpot {
             val room = room(coord)
             val tile = tileKey(coord)
-            return room.floorItems.getOrPut("$id@$tile@$source@${droppedBy ?: ""}") {
-                FloorItemSpot(id, tile, source, droppedBy)
-            }
+            return room.floorItems.getOrPut("$id@$tile@$source") { FloorItemSpot(id, tile, source) }
         }
 
         fun toOutput(): FloorOutput =
@@ -1142,12 +1172,13 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 sid = sid,
                 tile = tile,
                 count = count,
-                sequences = sequences,
-                spotanims = spotanims,
+                sequences = sequences.filterNot { it.key == "65535" },
+                spotanims = spotanims.filterNot { it.key == "65535" },
                 stats = stats.mapValues { (_, stat) -> NpcStatOutput(stat.baseLevel, stat.minCurrentLevel, stat.maxCurrentLevel) },
+                drops = drops.values.map { it.toOutput() },
             )
 
-        private fun FloorItemSpot.toOutput(): FloorItemOutput = FloorItemOutput(id, tile, count, source, droppedBy)
+        private fun FloorItemSpot.toOutput(): FloorItemOutput = FloorItemOutput(id, tile, count, source)
     }
 
     private class FloorOutput(
@@ -1233,6 +1264,8 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val sequences: Map<String, Int>,
         val spotanims: Map<String, Int>,
         val stats: Map<Int, NpcStatOutput>,
+        /** Items dropped by this specific npc spawn point's kills - see [DungeonStatisticsCommand.NpcSpot.drops]. */
+        val drops: List<FloorItemOutput>,
     )
 
     private class FloorItemOutput(
@@ -1240,7 +1273,6 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val tile: String,
         val count: Int,
         val source: String,
-        val droppedBy: String?,
     )
 
     private companion object {
@@ -1287,7 +1319,6 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         private val rs3Objects = loadRs3("loc")
         private val rs3Items = loadRs3("obj")
         private val rs3Animations = loadRs3("seq")
-        private val rs3Graphics = loadRs3("graphic")
 
         private val skillNames = arrayOf(
             "attack", "defence", "strength", "constitution", "ranged", "prayer", "magic",
@@ -1302,7 +1333,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         fun objectId(id: Int): String = rs3Objects.getOrDefault(id, id.toString())
         fun itemId(id: Int): String = rs3Items.getOrDefault(id, id.toString())
         fun animationId(id: Int): String = rs3Animations.getOrDefault(id, id.toString())
-        fun gfxId(id: Int): String = rs3Graphics.getOrDefault(id, id.toString())
+        fun gfxId(id: Int): String = id.toString()
 
         fun stripTags(text: String): String = TAG_REGEX.replace(text, "").trim()
 
