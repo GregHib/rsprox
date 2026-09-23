@@ -9,6 +9,13 @@ import net.rsprox.proxy.cli.ConfigLoader.loadRs3
 import net.rsprox.proxy.config.BINARY_PATH
 import net.rsprox.proxy.config.FILTERS_DIRECTORY
 import net.rsprox.proxy.config.SETTINGS_DIRECTORY
+import net.rsprox.proxy.dungeon.DoorOutput
+import net.rsprox.proxy.dungeon.FloorItemOutput
+import net.rsprox.proxy.dungeon.FloorOutput
+import net.rsprox.proxy.dungeon.NpcOutput
+import net.rsprox.proxy.dungeon.NpcStatOutput
+import net.rsprox.proxy.dungeon.ResourceOutput
+import net.rsprox.proxy.dungeon.RoomOutput
 import net.rsprox.proxy.filters.DefaultPropertyFilterSetStore
 import net.rsprox.proxy.huffman.HuffmanProvider
 import net.rsprox.proxy.rs3.binary.Rs3BinaryTranscriber
@@ -148,6 +155,13 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
      */
     private var pendingStartCoord: CoordGrid? = null
 
+    /**
+     * The resource node the local player last clicked; every xp drop in that node's skill is
+     * counted as one resource gathered from it (see [handleUpdateStat]), since a single click keeps
+     * gathering until the node depletes or the player does something else.
+     */
+    private var lastGatherSpot: ResourceSpot? = null
+
     /** True while decoding the standalone payload packets that follow a full-zone-snapshot header. */
     private var zoneIsFullSnapshot: Boolean = false
 
@@ -198,6 +212,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         pendingObstructions.clear()
         pendingDoorInteraction = null
         pendingStartCoord = null
+        lastGatherSpot = null
         zoneIsFullSnapshot = false
         val sessionState = SessionState(binary.header.revision, DefaultSettingSetStore(binaryPath))
         sessionState.createWorld(-1)
@@ -322,6 +337,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             pendingObstructions.clear()
             pendingDoorInteraction = null
             pendingStartCoord = null
+            lastGatherSpot = null
             introLines = mutableListOf()
             return
         }
@@ -415,6 +431,12 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val floor = current ?: return
         val skill = skillName(packet.skillId)
         floor.xpGained[skill] = (floor.xpGained[skill] ?: 0L) + gained
+        val spot = lastGatherSpot
+        if (spot != null && activeFloor != null && spot.skill == skill) {
+            // The depleting gather's xp can arrive in the same tick as (and after) the depleted loc.
+            val depletedTick = spot.depletedTick
+            if (depletedTick == null || currentTick <= depletedTick) spot.gathers++
+        }
     }
 
     /**
@@ -568,12 +590,14 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             floor.noteRotation(coord, world.instanceRotation(raw))
             door.attempts++
             pendingDoorInteraction = PendingDoorInteraction(coord, currentTick)
+            lastGatherSpot = null
             return
         }
         if (resourceSkill(name) == null) return
         floor.noteRotation(coord, world.instanceRotation(raw))
         val spot = floor.resourceSpot(coord, canonicalResourceId(name))
         spot.attempts++
+        lastGatherSpot = spot
     }
 
     /** The local player's index/coord is otherwise never populated on [sessionState] in this walk. */
@@ -753,6 +777,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         if (name.contains("empty")) {
             spot.depletions++
             if (spot.depletedAfter == null) spot.depletedAfter = spot.attempts
+            if (spot.depletedTick == null) spot.depletedTick = currentTick
         } else {
             spot.spawns++
         }
@@ -784,11 +809,13 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         if (deathSpot != null) {
             val spot = deathSpot.dropSpot(name, tileKey(coord))
             spot.count += count
+            if (spot.firstTick == null) spot.firstTick = currentTick
             return
         }
         val source = if (isSnapshot) "spawn" else "drop"
         val spot = floor.floorItemSpot(coord, name, source)
         spot.count += count
+        if (spot.firstTick == null) spot.firstTick = currentTick
     }
 
     private fun findRecentNpcDeath(coord: CoordGrid): NpcDeath? {
@@ -858,14 +885,19 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         var maxCurrentLevel: Int = Int.MIN_VALUE
     }
 
-    private class NpcStatOutput(val baseLevel: Int, val minCurrentLevel: Int, val maxCurrentLevel: Int)
-
     /** One specific gather point: a resource node at one exact tile, tracked across its full/depleted cycles. */
     private class ResourceSpot(val id: String, val tile: String) {
+        val skill: String? = resourceSkill(id)
         var attempts: Int = 0
         var spawns: Int = 0
         var depletions: Int = 0
         var depletedAfter: Int? = null
+
+        /** Resources gathered from this node, see [DungeonStatisticsCommand.handleUpdateStat]. */
+        var gathers: Int = 0
+
+        /** The tick the node was first seen depleted, after which later xp drops can't have come from it. */
+        var depletedTick: Int? = null
     }
 
     /** One specific NPC spawn point: an npc id repeatedly seen at one exact tile (e.g. across respawns). */
@@ -888,6 +920,9 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
     /** One specific ground item stack: a distinct id/tile/source combination. */
     private class FloorItemSpot(val id: String, val tile: String, val source: String) {
         var count: Int = 0
+
+        /** The tick this stack was first seen, e.g. to tell a key lying in a room from one appearing later. */
+        var firstTick: Int? = null
     }
 
     /**
@@ -1164,7 +1199,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             )
 
         private fun ResourceSpot.toOutput(): ResourceOutput =
-            ResourceOutput(id, tile, attempts, spawns, depletions, depletedAfter)
+            ResourceOutput(id, tile, attempts, spawns, depletions, depletedAfter, gathers)
 
         private fun NpcSpot.toOutput(): NpcOutput =
             NpcOutput(
@@ -1178,102 +1213,8 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 drops = drops.values.map { it.toOutput() },
             )
 
-        private fun FloorItemSpot.toOutput(): FloorItemOutput = FloorItemOutput(id, tile, count, source)
+        private fun FloorItemSpot.toOutput(): FloorItemOutput = FloorItemOutput(id, tile, count, source, firstTick)
     }
-
-    private class FloorOutput(
-        val sourceFile: String,
-        val floor: Int,
-        val complexity: String?,
-        val size: String?,
-        val partySize: Int,
-        val difficulty: Int,
-        val partyMembers: List<String>,
-        val floorBuffs: List<String>,
-        val startTick: Int,
-        val endTick: Int,
-        val floorTimeSeconds: Int,
-        val completed: Boolean,
-        val tokensAtStart: Int?,
-        val tokensAtEnd: Int?,
-        val tokensEarned: Int?,
-        val levelsAtStart: Map<String, Int>,
-        val xpGained: Map<String, Long>,
-        val completionMessages: List<String>,
-        val awardedItems: List<String>,
-        val startRoomTile: String?,
-        val bossRoomTile: String?,
-        val rooms: List<RoomOutput>,
-    )
-
-    private class RoomOutput(
-        /** The static room template's own coordinate in the template bank ("level, x, z"). */
-        val originatingTile: String,
-        /** Where this room actually sits in this floor's private instance, when known. */
-        val actualTile: String?,
-        val rotation: Int?,
-        val firstVisitTick: Int?,
-        val critical: Boolean?,
-        val doors: List<DoorOutput>,
-        val resources: List<ResourceOutput>,
-        val npcs: List<NpcOutput>,
-        val floorItems: List<FloorItemOutput>,
-    )
-
-    private class DoorOutput(
-        val direction: String,
-        val id: String,
-        val kind: String,
-        val keyNumber: Int?,
-        /** True when this locked door's matching "rand_locked_door_barrier_<n>" was seen this floor. */
-        val hasBarrier: Boolean,
-        /** kind == "skill_obstruction" only: the skill needed to clear it, e.g. "firemaking". */
-        val skill: String?,
-        /** How many times this door/obstruction was clicked (an OpLoc landed on its tile). */
-        val attempts: Int,
-        /** kind == "skill_obstruction" only: whether it was seen to actually clear. */
-        val cleared: Boolean?,
-        /** The door object's own animations (LocAnim), e.g. swinging open, mapped name to count. */
-        val objectSequences: Map<String, Int>,
-        /** Gfx played at the door's tile (MapAnim), mapped name to count. */
-        val objectSpotanims: Map<String, Int>,
-        /**
-         * The local player's animations while opening/failing to open this door, mapped name to
-         * count - can't itself distinguish success from failure, see [DungeonStatisticsCommand.applyPendingDoorInteractionAnims].
-         */
-        val playerSequences: Map<String, Int>,
-        /** Gfx played on the local player while opening/failing to open this door, mapped name to count. */
-        val playerSpotanims: Map<String, Int>,
-        val tile: String,
-    )
-
-    private class ResourceOutput(
-        val id: String,
-        val tile: String,
-        val attempts: Int,
-        val spawns: Int,
-        val depletions: Int,
-        val depletedAfter: Int?,
-    )
-
-    private class NpcOutput(
-        val id: Int,
-        val sid: String,
-        val tile: String,
-        val count: Int,
-        val sequences: Map<String, Int>,
-        val spotanims: Map<String, Int>,
-        val stats: Map<Int, NpcStatOutput>,
-        /** Items dropped by this specific npc spawn point's kills - see [DungeonStatisticsCommand.NpcSpot.drops]. */
-        val drops: List<FloorItemOutput>,
-    )
-
-    private class FloorItemOutput(
-        val id: String,
-        val tile: String,
-        val count: Int,
-        val source: String,
-    )
 
     private companion object {
         private const val VARP_REWARD_TOKENS = 1097
@@ -1342,8 +1283,12 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
             return RESOURCE_SKILL_REGEX.find(name)?.groupValues?.get(1)
         }
 
-        /** The node's mapped name with its depleted-state suffix stripped, so full/empty share one id. */
-        fun canonicalResourceId(name: String): String = name.removeSuffix("_empty")
+        /**
+         * The node's mapped name with its depleted-state marker stripped, so full/empty share one id:
+         * "rand_mining_resource_empty_frzn_1" -> "rand_mining_resource_frzn_1" (the marker sits
+         * mid-name, not at the end).
+         */
+        fun canonicalResourceId(name: String): String = name.replace("_resource_empty", "_resource").removeSuffix("_empty")
 
         /**
          * A standard room door ("rand_door_<theme>"), a co-op "guardian" door
