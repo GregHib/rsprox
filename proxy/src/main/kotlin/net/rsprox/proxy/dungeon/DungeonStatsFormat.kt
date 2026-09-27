@@ -103,7 +103,50 @@ internal class NpcOutput(
     val stats: Map<Int, NpcStatOutput>,
     /** Items dropped by this specific npc spawn point's kills. */
     val drops: List<FloorItemOutput>,
+    /** Each distinct area sound setup played on this npc's tile. Null in older dumps. */
+    val sounds: List<NpcSoundOutput>?,
+    /** Each distinct projectile setup this npc fired. Null in older dumps. */
+    val projectiles: List<NpcProjectileOutput>?,
 )
+
+/** One distinct set of area-sound settings; identical plays collapse into a single entry. */
+internal data class NpcSoundOutput(
+    val id: String,
+    val loops: Int,
+    val delay: Int,
+    val range: Int,
+    val volume: Int,
+    val rate: Int,
+    /** SoundAreaV2 only. */
+    val speech: Boolean?,
+)
+
+/**
+ * One distinct set of projectile settings; identical launches collapse into a single entry.
+ * [distance] (tiles, Chebyshev, source to target tile) is kept so timings that scale with range
+ * can be told apart from genuinely different setups.
+ */
+internal data class NpcProjectileOutput(
+    val id: String,
+    val startHeight: Int,
+    val endHeight: Int,
+    val startTime: Int,
+    val endTime: Int,
+    val angle: Int,
+    val progress: Int,
+    val followTerrain: Boolean,
+    /** Halfsq variants only. */
+    val fineStartHeight: Boolean?,
+    /** V2 variants only. */
+    val startOffset: ProjectileOffsetOutput?,
+    /** V2 variants only. */
+    val endOffset: ProjectileOffsetOutput?,
+    val distance: Double,
+    /** "player", "npc" or "coord". */
+    val target: String,
+)
+
+internal data class ProjectileOffsetOutput(val x: Int, val z: Int, val mode: Int)
 
 internal class NpcStatOutput(val baseLevel: Int, val minCurrentLevel: Int, val maxCurrentLevel: Int)
 
