@@ -13,7 +13,10 @@ import net.rsprox.proxy.dungeon.DoorOutput
 import net.rsprox.proxy.dungeon.FloorItemOutput
 import net.rsprox.proxy.dungeon.FloorOutput
 import net.rsprox.proxy.dungeon.NpcOutput
+import net.rsprox.proxy.dungeon.NpcProjectileOutput
+import net.rsprox.proxy.dungeon.NpcSoundOutput
 import net.rsprox.proxy.dungeon.NpcStatOutput
+import net.rsprox.proxy.dungeon.ProjectileOffsetOutput
 import net.rsprox.proxy.dungeon.ResourceOutput
 import net.rsprox.proxy.dungeon.RoomOutput
 import net.rsprox.proxy.filters.DefaultPropertyFilterSetStore
@@ -53,11 +56,19 @@ import net.rsprox.protocol.rs3.game.outgoing.model.zone.header.UpdateZonePartial
 import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.LocAddChange as Rs3LocAddChange
 import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.LocAnim as Rs3LocAnim
 import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapAnim as Rs3MapAnim
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapProjAnim as Rs3MapProjAnim
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapProjAnimHalfsq as Rs3MapProjAnimHalfsq
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapProjAnimHalfsqV2 as Rs3MapProjAnimHalfsqV2
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.MapProjAnimV2 as Rs3MapProjAnimV2
 import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.ObjAdd as Rs3ObjAdd
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.ProjectileOffset as Rs3ProjectileOffset
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.SoundAreaV1 as Rs3SoundAreaV1
+import net.rsprox.protocol.rs3.game.outgoing.model.zone.payload.SoundAreaV2 as Rs3SoundAreaV2
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import kotlin.math.abs
 import kotlin.io.path.createDirectories
 import kotlin.io.path.nameWithoutExtension
 import kotlin.io.path.writeText
@@ -108,6 +119,9 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
     private val npcIndexToId: MutableMap<Int, Int> = mutableMapOf()
     private val npcIndexToCoord: MutableMap<Int, CoordGrid> = mutableMapOf()
     private val npcIndexToSpot: MutableMap<Int, NpcSpot> = mutableMapOf()
+
+    /** The tile each npc last moved off, and on which tick - see [recordNpcSound]. */
+    private val npcIndexToPreviousCoord: MutableMap<Int, PreviousNpcCoord> = mutableMapOf()
 
     /**
      * Unlike the three maps above, this is deliberately *not* cleared on Remove: an npc walking out
@@ -202,6 +216,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         npcIndexToId.clear()
         npcIndexToCoord.clear()
         npcIndexToSpot.clear()
+        npcIndexToPreviousCoord.clear()
         npcIndexHistory.clear()
         currentLevels.clear()
         recentNpcDeaths.clear()
@@ -301,7 +316,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 val raw = world.relativizeZoneCoord(packet.xInZone, packet.zInZone)
                 activeFloor?.recordDoorObjectSpotanim(toRoomCoord(raw), gfxId(packet.id))
             }
-            else -> {}
+            else -> handleNpcZoneEffect(packet)
         }
     }
 
@@ -516,7 +531,11 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                     val previousId = npcIndexToId[index] ?: continue
                     val id = transformedId(previousId, update.extendedInfo)
                     if (id != previousId) npcIndexToId[index] = id
-                    npcIndexToCoord[index] = toRoomCoord(CoordGrid(update.level, update.x, update.z))
+                    val coord = toRoomCoord(CoordGrid(update.level, update.x, update.z))
+                    val previousCoord = npcIndexToCoord.put(index, coord)
+                    if (previousCoord != null && previousCoord != coord) {
+                        npcIndexToPreviousCoord[index] = PreviousNpcCoord(previousCoord, currentTick)
+                    }
                     if (update.extendedInfo.isNotEmpty()) {
                         // Anims/gfx/stats seen while the npc is active are attributed back to the
                         // spawn-point record its Add created, not to wherever it's since walked to.
@@ -525,6 +544,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 }
                 Rs3NpcUpdateType.Remove -> {
                     val deathCoord = npcIndexToCoord.remove(index)
+                    npcIndexToPreviousCoord.remove(index)
                     val deathId = npcIndexToId.remove(index)
                     val deathSpot = npcIndexToSpot.remove(index)
                     if (deathId != null && deathCoord != null && deathCoord != CoordGrid.INVALID) {
@@ -714,9 +734,145 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                     val raw = world.relativizeZoneCoord(child.xInZone, child.zInZone, packet.level)
                     activeFloor?.recordDoorObjectSpotanim(toRoomCoord(raw), gfxId(child.id))
                 }
-                else -> {}
+                else -> handleNpcZoneEffect(child, packet.level)
             }
         }
+    }
+
+    /**
+     * Area sounds and projectiles, whether standalone (following a zone header) or embedded in an
+     * enclosed zone packet. The halfsq projectile variants position in half-tiles (hence `shr 1`,
+     * and the halved distance) and carry an explicit source actor; the others only give the tile
+     * they were launched from.
+     */
+    private fun handleNpcZoneEffect(packet: Any, level: Int = -1) {
+        if (activeFloor == null) return
+        when (packet) {
+            is Rs3SoundAreaV1 ->
+                recordNpcSound(
+                    zoneTile(packet.xInZone, packet.zInZone, level),
+                    packet.id,
+                    NpcSoundOutput(soundId(packet.id), packet.loops, packet.delay, packet.range, packet.volume, packet.rate, null),
+                )
+            is Rs3SoundAreaV2 ->
+                recordNpcSound(
+                    zoneTile(packet.xInZone, packet.zInZone, level),
+                    packet.id,
+                    NpcSoundOutput(soundId(packet.id), packet.loops, packet.delay, packet.range, packet.volume, packet.rate, packet.speech),
+                )
+            is Rs3MapProjAnim ->
+                recordNpcProjectile(
+                    null,
+                    zoneTile(packet.xInZone, packet.zInZone, level),
+                    packet.id,
+                    NpcProjectileOutput(
+                        gfxId(packet.id), packet.startHeight, packet.endHeight, packet.startTime, packet.endTime,
+                        packet.angle, packet.progress, packet.followTerrain, null, null, null,
+                        projectileDistance(packet.deltaX, packet.deltaZ, 1), projectileTarget(packet.target),
+                    ),
+                )
+            is Rs3MapProjAnimV2 ->
+                recordNpcProjectile(
+                    null,
+                    zoneTile(packet.xInZone, packet.zInZone, level),
+                    packet.id,
+                    NpcProjectileOutput(
+                        gfxId(packet.id), packet.startHeight, packet.endHeight, packet.startTime, packet.endTime,
+                        packet.angle, packet.progress, packet.followTerrain, null,
+                        packet.startOffset.toOutput(), packet.endOffset.toOutput(),
+                        projectileDistance(packet.deltaX, packet.deltaZ, 1), projectileTarget(packet.target),
+                    ),
+                )
+            is Rs3MapProjAnimHalfsq ->
+                recordNpcProjectile(
+                    packet.source,
+                    zoneTile(packet.xInZone shr 1, packet.zInZone shr 1, level),
+                    packet.id,
+                    NpcProjectileOutput(
+                        gfxId(packet.id), packet.startHeight, packet.endHeight, packet.startTime, packet.endTime,
+                        packet.angle, packet.progress, packet.followTerrain, packet.fineStartHeight, null, null,
+                        projectileDistance(packet.deltaX, packet.deltaZ, 2), projectileTarget(packet.target),
+                    ),
+                )
+            is Rs3MapProjAnimHalfsqV2 ->
+                recordNpcProjectile(
+                    packet.source,
+                    zoneTile(packet.xInZone shr 1, packet.zInZone shr 1, level),
+                    packet.id,
+                    NpcProjectileOutput(
+                        gfxId(packet.id), packet.startHeight, packet.endHeight, packet.startTime, packet.endTime,
+                        packet.angle, packet.progress, packet.followTerrain, packet.fineStartHeight,
+                        packet.startOffset.toOutput(), packet.endOffset.toOutput(),
+                        projectileDistance(packet.deltaX, packet.deltaZ, 2), projectileTarget(packet.target),
+                    ),
+                )
+            else -> {}
+        }
+    }
+
+    private fun zoneTile(xInZone: Int, zInZone: Int, level: Int): CoordGrid =
+        toRoomCoord(world.relativizeZoneCoord(xInZone, zInZone, level))
+
+    /** Chebyshev source-to-target distance in tiles, from deltas measured in 1/[unitsPerTile] tiles. */
+    private fun projectileDistance(deltaX: Int, deltaZ: Int, unitsPerTile: Int): Double =
+        maxOf(abs(deltaX), abs(deltaZ)).toDouble() / unitsPerTile
+
+    private fun projectileTarget(actor: Int): String =
+        when (actor ushr 16) {
+            PROJECTILE_ACTOR_NPC -> "npc"
+            PROJECTILE_ACTOR_PLAYER -> "player"
+            else -> "coord"
+        }
+
+    private fun Rs3ProjectileOffset.toOutput(): ProjectileOffsetOutput = ProjectileOffsetOutput(x, z, mode)
+
+    /**
+     * Attributes an area sound to the tracked npc it was played on. The server plays an npc's sound
+     * at the tile it stood on when the sound was queued, i.e. *before* that tick's movement, which
+     * the npc info preceding it in the same tick has already applied - so an npc that moved this
+     * tick is matched on the tile it just left (see [npcIndexToPreviousCoord]) as well as its
+     * current one. A heuristic: sounds on a tile no npc occupies (e.g. the player's own spell
+     * sounds) are ignored, while a player sound played on an npc's tile (e.g. a spell impact on
+     * its target) is misattributed to that npc.
+     */
+    private fun recordNpcSound(coord: CoordGrid, id: Int, settings: NpcSoundOutput) {
+        if (id == -1 || id == 65535) return
+        val spot = npcSpotAt(coord) ?: npcSpotLeaving(coord) ?: return
+        spot.sounds.add(settings)
+    }
+
+    /**
+     * Attributes a projectile to the npc that fired it: the packed source actor when there is one
+     * (type 1 in the high bits is an npc, same encoding as the transcriber's projectileActor),
+     * otherwise whichever tracked npc stands on (or just left) the launch tile.
+     */
+    private fun recordNpcProjectile(sourceActor: Int?, coord: CoordGrid, id: Int, settings: NpcProjectileOutput) {
+        if (id == -1 || id == 65535) return
+        val spot =
+            (
+                if (sourceActor != null && sourceActor ushr 16 == PROJECTILE_ACTOR_NPC) {
+                    npcIndexToSpot[sourceActor and 0xFFFF]
+                } else {
+                    npcSpotAt(coord) ?: npcSpotLeaving(coord)
+                }
+            ) ?: return
+        spot.projectiles.add(settings)
+    }
+
+    private fun npcSpotAt(coord: CoordGrid): NpcSpot? {
+        if (coord == CoordGrid.INVALID) return null
+        val index = npcIndexToCoord.entries.firstOrNull { it.value == coord }?.key ?: return null
+        return npcIndexToSpot[index]
+    }
+
+    /** The npc that moved off [coord] during the current tick, if any. */
+    private fun npcSpotLeaving(coord: CoordGrid): NpcSpot? {
+        if (coord == CoordGrid.INVALID) return null
+        val index =
+            npcIndexToPreviousCoord.entries
+                .firstOrNull { it.value.coord == coord && it.value.tick == currentTick }
+                ?.key ?: return null
+        return npcIndexToSpot[index]
     }
 
     /**
@@ -875,6 +1031,8 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
 
     private class NpcDeath(val spot: NpcSpot?, val npcId: Int, val coord: CoordGrid, val tick: Int)
 
+    private class PreviousNpcCoord(val coord: CoordGrid, val tick: Int)
+
     private class PendingPlayerAction(val objId: Int, val tick: Int)
 
     private class PendingDoorInteraction(val coord: CoordGrid, val tick: Int)
@@ -906,6 +1064,12 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         val sequences: MutableMap<String, Int> = linkedMapOf()
         val spotanims: MutableMap<String, Int> = linkedMapOf()
         val stats: MutableMap<Int, NpcStatObservation> = linkedMapOf()
+
+        /** Distinct area sound setups played on this npc's tile - see [DungeonStatisticsCommand.recordNpcSound]. */
+        val sounds: MutableSet<NpcSoundOutput> = linkedSetOf()
+
+        /** Distinct projectile setups this npc fired - see [DungeonStatisticsCommand.recordNpcProjectile]. */
+        val projectiles: MutableSet<NpcProjectileOutput> = linkedSetOf()
 
         /**
          * Items dropped by this exact spawn point's kills, keyed by id/tile so a specific kill's
@@ -1211,6 +1375,8 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
                 spotanims = spotanims.filterNot { it.key == "65535" },
                 stats = stats.mapValues { (_, stat) -> NpcStatOutput(stat.baseLevel, stat.minCurrentLevel, stat.maxCurrentLevel) },
                 drops = drops.values.map { it.toOutput() },
+                sounds = sounds.toList(),
+                projectiles = projectiles.toList(),
             )
 
         private fun FloorItemSpot.toOutput(): FloorItemOutput = FloorItemOutput(id, tile, count, source, firstTick)
@@ -1234,6 +1400,10 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
 
         /** How many ticks after clicking a door/obstruction a player anim/gfx still counts as its response. */
         private const val DOOR_INTERACTION_ANIM_WINDOW_TICKS = 3
+
+        /** The high-bits actor type of a projectile's packed source/target that denotes an npc. */
+        private const val PROJECTILE_ACTOR_NPC = 1
+        private const val PROJECTILE_ACTOR_PLAYER = 2
 
         private val FLOOR_REGEX = Regex("""Floor\s*(?:<[^>]*>)?(\d+)\s*(?:<[^>]*>)?(\w+) Complexity""")
         private val SIZE_REGEX = Regex("""Dungeon Size:\s*(?:<[^>]*>)?(\w+)""")
@@ -1260,6 +1430,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         private val rs3Objects = loadRs3("loc")
         private val rs3Items = loadRs3("obj")
         private val rs3Animations = loadRs3("seq")
+        private val rs3Sounds = loadRs3("sound")
 
         private val skillNames = arrayOf(
             "attack", "defence", "strength", "constitution", "ranged", "prayer", "magic",
@@ -1275,6 +1446,7 @@ public class DungeonStatisticsCommand : CliktCommand(name = "dungeonstats"), Run
         fun itemId(id: Int): String = rs3Items.getOrDefault(id, id.toString())
         fun animationId(id: Int): String = rs3Animations.getOrDefault(id, id.toString())
         fun gfxId(id: Int): String = id.toString()
+        fun soundId(id: Int): String = rs3Sounds.getOrDefault(id, id.toString())
 
         fun stripTags(text: String): String = TAG_REGEX.replace(text, "").trim()
 
