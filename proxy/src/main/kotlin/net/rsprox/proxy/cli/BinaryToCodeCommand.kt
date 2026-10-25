@@ -61,6 +61,8 @@ import net.rsprox.protocol.rs3.game.outgoing.model.camera.CamShake as Rs3CamShak
 import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.NpcInfo as Rs3NpcInfo
 import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.NpcUpdateType as Rs3NpcUpdateType
 import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.extendedinfo.AnimationExtendedInfo as Rs3AnimationExtendedInfo
+import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.extendedinfo.NpcMask.Sequence as Rs3Animation
+import net.rsprox.protocol.rs3.game.outgoing.model.info.npcinfo.extendedinfo.NpcMask.Text as Rs3Say
 import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.PlayerInfo as Rs3PlayerInfo
 import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.PlayerUpdateType as Rs3PlayerUpdateType
 import net.rsprox.protocol.rs3.game.outgoing.model.info.playerinfo.extendedinfo.PlayerExtendedInfo as Rs3PlayerExtendedInfo
@@ -793,7 +795,11 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                             for (info in update.extendedInfo) {
                                 when (info) {
                                     is Rs3AnimationExtendedInfo -> println("${indent}npc.anim(\"${animationId(info.animId, rs3 = true)}\") // ${npc.name} ${npc.id} ${info.animId}")
-                                    else -> {}
+                                    is Rs3Animation -> println("${indent}npc.anim(\"${animationId(info.ids.first(), rs3 = true)}\") // ${npc.name} ${npc.id} ${info.ids} ${info.delay}")
+                                    is Rs3Say -> println("${indent}npc.say(\"${info.text}\") // ${npc.name} ${npc.id}")
+                                    else -> {
+                                        println("$info // ${npc.name} ${npc.id}")
+                                    }
                                 }
                             }
                         }
@@ -1396,36 +1402,37 @@ public class BinaryToCodeCommand : Transcriber(name = "tocode") {
                 // rs3
                 9827, 9828, 9829, 9830, 37930 -> "Quiz"
                 9831, 9832, 9833, 9834 -> "Bored"
-                9847, 9848, 9849, 9850 -> "Happy"
-                9746, 9747, 9748, 9749 -> "Shock"
+                9847, 9848, 9849, 9850, 37905, 9179 -> "Happy"
+                9746, 9747, 9748, 9749, 9743, 37921 -> "Shock"
                 9811, 9812, 9813, 9814 -> "Confused"
                 9807, 9808, 9809, 9810, 37902 -> "Neutral"
-                9836, 9837, 9838, 9839 -> "Shifty"
+                9836, 9837, 9838, 9839, 7179 -> "Shifty"
                 9773, 9774, 9775, 9776 -> "Scared"
                 9757, 9758, 9759, 9760 -> "Disheartened"
                 9843, 9844, 9845, 9846, 37904 -> "Pleased"
                 9835 -> "Drunk"
                 9840 -> "Laugh"
                 9842 -> "EvilLaugh"
-                9761, 9762, 9763, 9764, 37911 -> "Sad"
-                9785, 9786, 9787, 9788 -> "Angry"
+                9761, 9762, 9763, 9764, 7177, 37911 -> "Sad"
+                9785, 9786, 9787, 9788, 37908 -> "Angry"
                 9781, 9782, 9783, 9784 -> "Frustrated"
                 // osrs
-                554, 555, 556, 557 -> "Quiz"
-                562, 563, 564, 565 -> "Bored"
-                567, 568, 569, 570 -> "Happy"
-                571, 572, 573, 574 -> "Shock"
-                575, 576, 577, 578 -> "Confused"
-                588, 589, 590, 591 -> "Neutral"
-                592, 593, 594, 595 -> "Shifty"
-                596, 597, 598, 599 -> "Scared"
+                554, 555, 556, 557, 7176 -> "Quiz"
+                562, 563, 564, 565, 37929, 7169 -> "Bored"
+                567, 568, 569, 570, 7172 -> "Happy"
+                571, 572, 573, 574, 7180 -> "Shock"
+                575, 576, 577, 578, 37933 -> "Confused"
+                588, 589, 590, 591, 7173 -> "Neutral"
+                592, 593, 594, 595, 37931 -> "Shifty"
+                596, 597, 598, 599, 9771, 7178 -> "Scared"
                 600, 601, 602, 603 -> "Drunk"
-                605, 606, 607, 608 -> "Laugh"
-                609 -> "EvilLaugh"
+                605, 606, 607, 608, 37915 -> "Laugh"
+                609, 7171 -> "EvilLaugh"
                 610, 611, 612, 613 -> "Sad"
-                614, 615, 616, 617 -> "Angry"
+                614, 615, 616, 617, 7168 -> "Angry"
                 585 -> "TreeHappy"
                 584 -> "TreeTalk"
+                37903 -> "Idle"
                 else -> id.toString()
             }
         }
@@ -1436,7 +1443,7 @@ public fun main() {
     BinaryToCodeCommand().main(
         arrayOf(
             "-name",
-            "20260921T160241-0ddf543"
+            "20261023T144331-0ddf543"
         )
     )
 }
