@@ -54,6 +54,10 @@ public abstract class Transcriber(name: String) : CliktCommand(name), Runnable {
         return true
     }
 
+    /** Called before the packets of each binary are processed. */
+    public open fun onBinary(path: Path) {
+    }
+
     private fun simpleTranscribe(
         binaryPath: Path,
         binary: BinaryBlob,
@@ -62,6 +66,7 @@ public abstract class Transcriber(name: String) : CliktCommand(name), Runnable {
         filters: PropertyFilterSetStore,
         settings: SettingSetStore,
     ) {
+        onBinary(binaryPath)
         if (binary.header.isRuneScape3()) {
             val sessionState = SessionState(binary.header.revision, DefaultSettingSetStore(binaryPath))
             sessionState.createWorld(-1)
